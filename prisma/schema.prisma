@@ -33,7 +33,7 @@ enum DeviceType {
 
 enum SessionStatus {
     ACTIVE
-    STOPPED
+    ENDED
 }
 
 enum PaymentStatus {
@@ -74,6 +74,7 @@ model Session {
     duration    Int?          // Duration in minutes
     cost        Decimal?      @default(0)
     comments    String?       @default("")
+    framesPlayed Int?         // Number of frames played (for FRAME game type)
     status      SessionStatus @default(ACTIVE)
     createdAt   DateTime      @default(now())
     updatedAt   DateTime      @updatedAt
@@ -83,7 +84,7 @@ model Bill {
     id          Int           @id @default(autoincrement())
     token       Token         @relation(fields: [tokenId], references: [id])
     tokenId     Int
-    totalAmount Decimal
+    amount      Decimal
     generatedAt DateTime      @default(now())
     status      PaymentStatus @default(PENDING)
 }

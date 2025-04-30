@@ -63,7 +63,7 @@ async function main() {
     data: {
       type: 'FRAME',
       counterNo: 1,
-      maxPlayers: 1,
+      maxPlayers: 10,
       hourlyRate: 100, // Example rate
     },
   });

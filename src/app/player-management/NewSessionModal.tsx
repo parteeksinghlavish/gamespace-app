@@ -38,7 +38,7 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
   const { data: availableDevices, isLoading: isLoadingAvailable, refetch: refetchAvailableDevices } = api.playerManagement.getAvailableDevices.useQuery(
     undefined, 
     {
-      refetchInterval: 30000, // Refetch every 30 seconds
+      refetchInterval: 10000, // Refetch every 30 seconds
       refetchOnWindowFocus: true, // Refetch when window regains focus
     }
   );
@@ -47,7 +47,7 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
   const { data: allDevices, isLoading: isLoadingAll, refetch: refetchAllDevices } = api.playerManagement.getAllDevices.useQuery(
     undefined,
     {
-      refetchInterval: 30000, // Refetch every 30 seconds
+      refetchInterval: 10000, // Refetch every 30 seconds
       refetchOnWindowFocus: true, // Refetch when window regains focus
     }
   );
@@ -56,7 +56,7 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
   const { data: existingTokens, refetch: refetchTokens } = api.playerManagement.getTodaySessions.useQuery(
     undefined,
     {
-      refetchInterval: 30000, // Refetch every 30 seconds
+      refetchInterval: 10000, // Refetch every 30 seconds
       refetchOnWindowFocus: true, // Refetch when window regains focus
     }
   );

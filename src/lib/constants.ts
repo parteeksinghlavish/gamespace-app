@@ -4,7 +4,7 @@
 
 export enum SessionStatus {
   ACTIVE = "ACTIVE",
-  STOPPED = "STOPPED"
+  ENDED = "ENDED"
 }
 
 export enum DeviceType {

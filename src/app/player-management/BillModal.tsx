@@ -3,6 +3,7 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '~/trpc/react';
 import { PaymentStatus } from '~/lib/constants';
+import { roundTimeToCharge, calculatePrice, calculateSessionCost, calculateTotalCost } from "~/lib/pricing";
 
 // Define types for our data
 interface Device {
@@ -56,30 +57,52 @@ function getDisplayDuration(session: Session): string {
     // For active sessions, calculate duration from start time to now
     const now = new Date();
     const start = new Date(session.startTime);
-    const durationInMinutes = Math.ceil(
-      (now.getTime() - start.getTime()) / (1000 * 60)
-    );
-    return `${durationInMinutes} min (active)`;
+    const calculatedMinutes = Math.ceil((now.getTime() - start.getTime()) / (1000 * 60));
+    
+    // Show both actual minutes and rounded billing minutes
+    const billingMinutes = roundTimeToCharge(calculatedMinutes);
+    
+    if (billingMinutes === 0) {
+      return `${calculatedMinutes}m (Free tier)`;
+    }
+    
+    return `${calculatedMinutes}m (Billed: ${billingMinutes}m)`;
   } else {
-    // For ended sessions, use stored duration
-    return `${session.duration || 0} min`;
+    // For ended sessions, use the stored duration
+    const storedDuration = session.duration || 0;
+    const billingMinutes = roundTimeToCharge(storedDuration);
+    if (billingMinutes === storedDuration) {
+      return `${storedDuration}m`;
+    } else {
+      return `${storedDuration}m (Billed: ${billingMinutes}m)`;
+    }
   }
+}
+
+// Helper function to get the rounded billing time
+function getBilledTime(session: Session): string {
+  // Frame devices don't use time-based billing
+  if (session.device.type === "FRAME") {
+    return "N/A";
+  }
+
+  const actualMinutes = session.status === "ACTIVE" 
+    ? Math.ceil((new Date().getTime() - new Date(session.startTime).getTime()) / (1000 * 60)) 
+    : session.duration || 0;
+  
+  const billedMinutes = roundTimeToCharge(actualMinutes);
+  
+  if (billedMinutes === 0) {
+    return 'Free tier (≤7m)';
+  }
+  
+  return `${billedMinutes}m`;
 }
 
 // Helper function to calculate cost for display
 function getDisplayCost(session: Session): string {
-  if (session.status === "ACTIVE") {
-    // For active sessions, calculate cost from start time to now
-    const now = new Date();
-    const start = new Date(session.startTime);
-    const durationInMinutes = (now.getTime() - start.getTime()) / (1000 * 60);
-    const hourlyRate = session.device.hourlyRate;
-    const cost = (Number(hourlyRate) / 60) * durationInMinutes;
-    return formatCurrency(cost);
-  } else {
-    // For ended sessions, use stored cost
-    return formatCurrency(session.cost || 0);
-  }
+  // Use the centralized function for session cost calculation
+  return formatCurrency(calculateSessionCost(session));
 }
 
 export default function BillModal({ isOpen, onClose, tokenId, onSuccess }: BillModalProps) {
@@ -114,6 +137,8 @@ export default function BillModal({ isOpen, onClose, tokenId, onSuccess }: BillM
     onSuccess: () => {
       utils.playerManagement.getBill.invalidate({ billId: billId! });
       utils.playerManagement.getTodaySessions.invalidate();
+      utils.playerManagement.getAvailableDevices.invalidate();
+      utils.playerManagement.getAllDevices.invalidate();
       onSuccess();
       onClose();
       showToast('Bill updated successfully', 'success');
@@ -153,24 +178,33 @@ export default function BillModal({ isOpen, onClose, tokenId, onSuccess }: BillM
   };
 
   const handleMarkAsPaid = () => {
-    if (billId) {
+    if (billId && bill) {
+      // Calculate the correct total using the centralized function
+      const correctTotal = calculateTotalCost(bill.token.sessions);
       updateBillStatusMutation.mutate({
         billId,
         status: PaymentStatus.PAID,
+        correctedAmount: correctTotal
       });
     }
   };
 
   const handleMarkAsDue = () => {
-    if (billId) {
+    if (billId && bill) {
+      // Calculate the correct total using the centralized function
+      const correctTotal = calculateTotalCost(bill.token.sessions);
       updateBillStatusMutation.mutate({
         billId,
         status: PaymentStatus.DUE,
+        correctedAmount: correctTotal
       });
     }
   };
 
   if (!isOpen) return null;
+
+  // Calculate total amount for the bill
+  const totalAmount = bill ? calculateTotalCost(bill.token.sessions) : 0;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
@@ -201,18 +235,25 @@ export default function BillModal({ isOpen, onClose, tokenId, onSuccess }: BillM
                         <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Device</th>
                         <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Players</th>
                         <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Duration</th>
+                        <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Billed Time</th>
                         <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Amount</th>
                       </tr>
                     </thead>
                     <tbody className="bg-white divide-y divide-gray-200">
-                      {bill.token.sessions.map((session: Session) => (
+                      {bill.token.sessions.map((session) => (
                         <tr key={session.id}>
                           <td className="px-3 py-2 whitespace-nowrap">
                             {session.device.type} {session.device.counterNo}
                           </td>
                           <td className="px-3 py-2 whitespace-nowrap">{session.playerCount}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">{getDisplayDuration(session)}</td>
-                          <td className="px-3 py-2 whitespace-nowrap">{getDisplayCost(session)}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">
+                            {session.status === "ACTIVE" 
+                              ? Math.ceil((new Date().getTime() - new Date(session.startTime).getTime()) / (1000 * 60)) 
+                              : session.duration || 0
+                            }m
+                          </td>
+                          <td className="px-3 py-2 whitespace-nowrap">{getBilledTime(session as any)}</td>
+                          <td className="px-3 py-2 whitespace-nowrap">{getDisplayCost(session as any)}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -221,9 +262,13 @@ export default function BillModal({ isOpen, onClose, tokenId, onSuccess }: BillM
               </div>
 
               <div className="border-t pt-4 mb-4">
-                <div className="flex justify-between items-center text-lg font-medium">
-                  <span>Total Amount:</span>
-                  <span className="text-blue-600">{formatCurrency(bill.totalAmount)}</span>
+                <div className="flex flex-col">
+                  <div className="flex justify-between items-center text-lg font-medium">
+                    <span>Total Amount:</span>
+                    <span className="text-blue-600">
+                      {formatCurrency(totalAmount)}
+                    </span>
+                  </div>
                 </div>
                 {bill.status !== PaymentStatus.PENDING && (
                   <div className="mt-2 flex justify-end">
@@ -238,7 +283,7 @@ export default function BillModal({ isOpen, onClose, tokenId, onSuccess }: BillM
                 )}
               </div>
 
-              {bill.status === PaymentStatus.PENDING && bill.token.sessions.some((s: Session) => s.status === "ACTIVE") && (
+              {bill.status === PaymentStatus.PENDING && bill.token.sessions.some((s: any) => s.status === "ACTIVE") && (
                 <div className="bg-yellow-50 border-l-4 border-yellow-400 p-4 mb-4">
                   <div className="flex">
                     <div className="flex-shrink-0">
