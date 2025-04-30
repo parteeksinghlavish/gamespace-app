@@ -6,7 +6,7 @@
  * TL;DR - This is where all the tRPC server stuff is created and plugged in. The pieces you will
  * need to use are documented accordingly near the end.
  */
-import { initTRPC } from "@trpc/server";
+import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
 
@@ -25,8 +25,13 @@ import { db } from "~/server/db";
  * @see https://trpc.io/docs/server/context
  */
 export const createTRPCContext = async (opts: { headers: Headers }) => {
+  // For now, we're implementing a simple check for admin access
+  // In a real app, you would integrate with NextAuth or similar
+  const isAdmin = opts.headers.get("x-admin-token") === process.env.ADMIN_SECRET_TOKEN;
+  
   return {
     db,
+    isAdmin,
     ...opts,
   };
 };
@@ -104,3 +109,23 @@ const timingMiddleware = t.middleware(async ({ next, path }) => {
  * are logged in.
  */
 export const publicProcedure = t.procedure.use(timingMiddleware);
+
+/**
+ * Protected (authenticated) procedure
+ *
+ * This is the procedure you should use for any endpoint that requires authentication.
+ * It verifies the user is authenticated before running the procedure.
+ */
+export const protectedProcedure = publicProcedure.use(({ ctx, next }) => {
+  if (!ctx.isAdmin) {
+    throw new TRPCError({
+      code: "UNAUTHORIZED",
+      message: "You must be an administrator to access this resource",
+    });
+  }
+  return next({
+    ctx: {
+      ...ctx,
+    },
+  });
+});

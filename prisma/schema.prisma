@@ -18,3 +18,72 @@ model Post {
 
     @@index([name])
 }
+
+// Gaming Cafe Management Models
+
+enum DeviceType {
+    PS5
+    PS4
+    VR
+    VR_RACING
+    POOL
+    FRAME
+    RACING
+}
+
+enum SessionStatus {
+    ACTIVE
+    STOPPED
+}
+
+enum PaymentStatus {
+    PENDING
+    PAID
+    DUE
+}
+
+model Device {
+    id          Int        @id @default(autoincrement())
+    type        DeviceType
+    counterNo   Int
+    maxPlayers  Int
+    hourlyRate  Decimal
+    sessions    Session[]
+
+    @@unique([type, counterNo])
+}
+
+model Token {
+    id          Int         @id @default(autoincrement())
+    tokenNo     Int
+    createdAt   DateTime    @default(now())
+    updatedAt   DateTime    @updatedAt
+    sessions    Session[]
+    bills       Bill[]
+}
+
+model Session {
+    id          Int           @id @default(autoincrement())
+    token       Token         @relation(fields: [tokenId], references: [id])
+    tokenId     Int
+    device      Device        @relation(fields: [deviceId], references: [id])
+    deviceId    Int
+    playerCount Int
+    startTime   DateTime      @default(now())
+    endTime     DateTime?
+    duration    Int?          // Duration in minutes
+    cost        Decimal?      @default(0)
+    comments    String?       @default("")
+    status      SessionStatus @default(ACTIVE)
+    createdAt   DateTime      @default(now())
+    updatedAt   DateTime      @updatedAt
+}
+
+model Bill {
+    id          Int           @id @default(autoincrement())
+    token       Token         @relation(fields: [tokenId], references: [id])
+    tokenId     Int
+    totalAmount Decimal
+    generatedAt DateTime      @default(now())
+    status      PaymentStatus @default(PENDING)
+}
