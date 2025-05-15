@@ -42,6 +42,12 @@ enum PaymentStatus {
     DUE
 }
 
+enum OrderStatus {
+    ACTIVE
+    COMPLETED
+    CANCELLED
+}
+
 model Device {
     id          Int        @id @default(autoincrement())
     type        DeviceType
@@ -58,14 +64,32 @@ model Token {
     tokenNo     Int
     createdAt   DateTime    @default(now())
     updatedAt   DateTime    @updatedAt
+    orders      Order[]     // A token can have multiple orders (visits)
+    sessions    Session[]   // Keep for backward compatibility
+    bills       Bill[]      // Keep for backward compatibility
+}
+
+model Order {
+    id          String       @id @default(uuid())
+    orderNumber String       @unique // Human-readable order number
+    token       Token        @relation(fields: [tokenId], references: [id])
+    tokenId     Int
+    status      OrderStatus  @default(ACTIVE)
+    startTime   DateTime     @default(now())
+    endTime     DateTime?
     sessions    Session[]
     bills       Bill[]
+    notes       String?
+    createdAt   DateTime     @default(now())
+    updatedAt   DateTime     @updatedAt
 }
 
 model Session {
     id          Int           @id @default(autoincrement())
     token       Token         @relation(fields: [tokenId], references: [id])
     tokenId     Int
+    order       Order?        @relation(fields: [orderId], references: [id])
+    orderId     String?       // Optional to support existing sessions
     device      Device        @relation(fields: [deviceId], references: [id])
     deviceId    Int
     playerCount Int
@@ -82,9 +106,17 @@ model Session {
 
 model Bill {
     id          Int           @id @default(autoincrement())
+    // Keep token relation for backward compatibility
     token       Token         @relation(fields: [tokenId], references: [id])
     tokenId     Int
+    // New order relation
+    order       Order?        @relation(fields: [orderId], references: [id])
+    orderId     String?       // Optional for backward compatibility
     amount      Decimal
     generatedAt DateTime      @default(now())
     status      PaymentStatus @default(PENDING)
+    correctedAmount Decimal?  // Store any manually adjusted amount
+    paymentMethod String?     // Method of payment (cash, card, etc.)
+    paymentReference String?  // Reference number for electronic payments
+    paidAt      DateTime?     // When the bill was paid
 }

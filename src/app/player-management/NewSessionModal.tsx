@@ -9,30 +9,52 @@ interface Device {
   type: string;
   counterNo: number;
   maxPlayers: number;
-  hourlyRate: number;
+  hourlyRate: number | any; // Allow for Decimal type from the backend
 }
 
 // Define a Token type
 interface Token {
   id: number;
   tokenNo: number;
+  createdAt: Date;
+  updatedAt: Date;
+  sessions?: any[]; // Add sessions property
+  orders?: any[];   // Add orders property
+  bills?: any[];    // Add bills property
+}
+
+// Define an Order type
+interface Order {
+  id: string;
+  orderNumber: string;
+  status: string;
 }
 
 interface NewSessionModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess: () => void;
+  existingOrderId?: string; // New prop to specify an existing order ID
+  isMainButton?: boolean; // New prop to indicate modal opened from main button
 }
 
-export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessionModalProps) {
+export default function NewSessionModal({ 
+  isOpen, 
+  onClose, 
+  onSuccess, 
+  existingOrderId,
+  isMainButton = false // Default to false
+}: NewSessionModalProps) {
   const [tokenNo, setTokenNo] = useState<number>(1);
   const [deviceId, setDeviceId] = useState<string>('');
   const [playerCount, setPlayerCount] = useState<number>(1);
   const [comments, setComments] = useState<string>('');
+  const [orderId, setOrderId] = useState<string>('new'); // 'new' for new order, or actual ID
   const [errors, setErrors] = useState<{ [key: string]: string }>({});
   const [showDeviceDropdown, setShowDeviceDropdown] = useState(false);
   const [showPlayerDropdown, setShowPlayerDropdown] = useState(false);
   const [showTokenDropdown, setShowTokenDropdown] = useState(false);
+  const [showOrderDropdown, setShowOrderDropdown] = useState(false);
 
   // Query to get available devices
   const { data: availableDevices, isLoading: isLoadingAvailable, refetch: refetchAvailableDevices } = api.playerManagement.getAvailableDevices.useQuery(
@@ -100,6 +122,7 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
     setDeviceId('');
     setPlayerCount(1);
     setComments('');
+    setOrderId('new');
     setErrors({});
   };
 
@@ -125,14 +148,48 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
     return Object.keys(newErrors).length === 0;
   };
 
+  // Initialize orderId from prop if provided
+  useEffect(() => {
+    if (existingOrderId) {
+      setOrderId(existingOrderId);
+      
+      // If we have an existing order, find its token number
+      if (existingTokens) {
+        for (const token of existingTokens) {
+          const orderWithId = (token as Token).orders?.find((o: any) => o.id === existingOrderId);
+          if (orderWithId) {
+            setTokenNo(token.tokenNo);
+            break;
+          }
+        }
+      }
+    } else if (isMainButton) {
+      // Always set to 'new' when opened from main button
+      setOrderId('new');
+      // Auto-select first available token
+      assignNextAvailableToken();
+    }
+  }, [existingOrderId, existingTokens, isMainButton]);
+
+  // Handle form submission
   const handleSubmit = () => {
     if (validateForm()) {
-      createSessionMutation.mutate({
+      const sessionData: any = {
         deviceId: parseInt(deviceId),
         tokenNo,
         playerCount,
         comments,
-      });
+      };
+
+      // Add orderId if not creating a new order
+      if (orderId !== 'new') {
+        sessionData.orderId = orderId;
+      } else if (existingOrderId) {
+        // If modal was opened with an existing order ID, use that
+        sessionData.orderId = existingOrderId;
+      }
+
+      createSessionMutation.mutate(sessionData);
     }
   };
 
@@ -155,6 +212,7 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
         setShowDeviceDropdown(false);
         setShowPlayerDropdown(false);
         setShowTokenDropdown(false);
+        setShowOrderDropdown(false);
       }
     }
     
@@ -163,6 +221,23 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // Get active orders for the selected token
+  const activeOrders = React.useMemo(() => {
+    if (!existingTokens || !tokenNo) return [];
+    
+    // Find the token with the matching number
+    const selectedToken = existingTokens.find(
+      (token: any) => token.tokenNo === tokenNo
+    );
+    
+    if (!selectedToken) return [];
+    
+    // Get active orders for this token
+    return (selectedToken as Token).orders?.filter(
+      (order: any) => order.status === 'ACTIVE'
+    ) || [];
+  }, [existingTokens, tokenNo]);
 
   // Get selected device to determine max players
   const selectedDevice = React.useMemo(() => {
@@ -201,6 +276,11 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
     }
   }, [deviceId, availableDevices]);
 
+  // Reset order when token changes
+  useEffect(() => {
+    setOrderId('new');
+  }, [tokenNo]);
+
   // Format device label
   const getDeviceLabel = (device: Device) => {
     return `${device.type} ${device.counterNo}`;
@@ -209,24 +289,34 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
   // Check if a device is available
   const isDeviceAvailable = (device: Device) => {
     if (!availableDevices) return true;
-    return availableDevices.some((d: Device) => d.id === device.id);
+    
+    // A device is available if it's in the availableDevices array
+    // The server should be filtering this list to only include devices 
+    // not currently in active use today
+    return availableDevices.some((d: any) => d.id === device.id);
+  };
+
+  // Format order label
+  const getOrderLabel = (order: Order) => {
+    return `${order.orderNumber}`;
   };
 
   // Check if a token number is assigned (unavailable)
   const isTokenAssigned = (tokenNumber: number) => {
     if (!existingTokens) return false;
 
-    // A token is considered "in use" if ANY token with this number either:
-    // 1. Has active sessions, OR
-    // 2. Has pending bills with no completed bills
-    // This exactly matches the filteringIn PlayerManagementContent
+    // A token is considered "in use" if ANY token with this number
+    // has active sessions TODAY
+    
+    const today = new Date();
+    today.setHours(0, 0, 0, 0); // Start of today
     
     for (const token of existingTokens) {
       // Skip tokens with different numbers
       if (token.tokenNo !== tokenNumber) continue;
       
-      // Step 1: Check for active sessions
-      const hasActiveSession = token.sessions.some(
+      // Check only for active sessions
+      const hasActiveSession = (token as Token).sessions?.some(
         (session: any) => session.status === "ACTIVE"
       );
       
@@ -234,306 +324,312 @@ export default function NewSessionModal({ isOpen, onClose, onSuccess }: NewSessi
         // Has active sessions - token is in use
         return true;
       }
-      
-      // Step 2: If no active sessions, check bill status
-      const hasCompletedBill = token.bills?.some(
-        (bill: any) => bill.status === 'PAID' || bill.status === 'DUE'
-      );
-      
-      // If all sessions ended but no completed bills, token is in use
-      const allSessionsEnded = token.sessions.every(
-        (session: any) => session.status !== "ACTIVE"
-      );
-      
-      if (allSessionsEnded && !hasCompletedBill) {
-        // Has no active sessions but also no completed bills - still in use
-        return true;
-      }
     }
     
-    // If we got here, the token number is available for use
-    return false;
+    return false; // Token is available
   };
 
-  // Find the next available token number
+  // Get next available token number
   const getNextAvailableToken = () => {
-    if (!existingTokens || existingTokens.length === 0) return 1;
+    if (!existingTokens) return 1;
     
-    // Check each number from 1 to 50
-    for (let i = 1; i <= 50; i++) {
-      // If this token number is not assigned (using our updated logic), it's available
+    // Simplify: Use 1-10 as token numbers
+    for (let i = 1; i <= 10; i++) {
       if (!isTokenAssigned(i)) {
         return i;
       }
     }
     
-    // If no available token found, return the next higher number
+    // If all 1-10 are in use, suggest token #1 as a fallback
     return 1;
   };
 
+  // Assign next available token
   const assignNextAvailableToken = () => {
-    const nextToken = getNextAvailableToken();
-    setTokenNo(nextToken);
-    setShowTokenDropdown(false);
+    setTokenNo(getNextAvailableToken());
   };
 
-  if (!isOpen) return null;
-
-  // Generate numbers 1 to max for dropdowns
+  // Helper to generate array of numbers
   const generateNumbers = (max: number) => {
     return Array.from({ length: max }, (_, i) => i + 1);
   };
 
+  // Modified to get only available token numbers
+  const getAvailableTokenNumbers = () => {
+    if (!existingTokens) return [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+    
+    // Only include numbers that are not assigned
+    return generateNumbers(10).filter(num => !isTokenAssigned(num));
+  };
+
+  // If the modal is not open, don't render anything
+  if (!isOpen) return null;
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
-      <div className="bg-white rounded-xl w-full max-w-2xl shadow-xl overflow-hidden">
-        <div className="bg-blue-600 p-4 sm:p-5">
-          <h3 className="text-xl font-semibold text-white">New Gaming Session</h3>
+    <div className="fixed inset-0 bg-black bg-opacity-40 flex items-center justify-center p-4 z-50">
+      <div className="bg-white rounded-lg shadow-xl max-w-xl w-full overflow-hidden">
+        <div className="bg-blue-600 px-6 py-4 flex justify-between items-center">
+          <h2 className="text-xl font-semibold text-white">
+            {existingOrderId ? "Add Session to Order" : "New Gaming Session"}
+          </h2>
+          <button
+            onClick={onClose}
+            className="text-white hover:text-gray-200"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
         </div>
-        <div className="p-4 sm:p-6">
-          {/* Device Dropdown */}
-          <div className="mb-5">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Device
-            </label>
-            <div className="relative dropdown-container">
-              <button
-                type="button"
-                className="block w-full text-left px-4 py-3 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white hover:bg-gray-50 transition-colors"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setShowDeviceDropdown(!showDeviceDropdown);
-                  setShowPlayerDropdown(false);
-                  setShowTokenDropdown(false);
-                }}
-              >
-                {selectedDevice ? getDeviceLabel(selectedDevice) : "Select device"}
-                <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                  <svg className="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor">
-                    <path d="M7 7l3 3 3-3" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        
+        <div className="p-6">
+          <div className="space-y-6">
+            {/* Device Selection */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Device</label>
+              <div className="relative dropdown-container">
+                <div 
+                  className="flex p-3 border border-gray-300 rounded-lg cursor-pointer bg-white hover:border-blue-500 transition-colors"
+                  onClick={() => setShowDeviceDropdown(!showDeviceDropdown)}
+                >
+                  <span className="flex-grow">
+                    {deviceId 
+                      ? (selectedDevice 
+                          ? `${getDeviceLabel(selectedDevice)}${!isDeviceAvailable(selectedDevice) ? ' (in use)' : ''}` 
+                          : 'Loading...')
+                      : 'Select device'}
+                  </span>
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                   </svg>
-                </span>
-              </button>
-              
-              {showDeviceDropdown && allDevices && (
-                <div className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-xl py-1 overflow-auto border border-gray-200">
-                  {isLoadingAll ? (
-                    <div className="p-2 text-center text-gray-500">Loading devices...</div>
-                  ) : allDevices.length === 0 ? (
-                    <div className="p-2 text-center text-gray-500">No devices found</div>
-                  ) : (
-                    <>
-                      {isLoadingAvailable && (
-                        <div className="p-1 text-xs text-center text-blue-500 bg-blue-50 border-b border-blue-100">
-                          Refreshing availability status...
+                </div>
+                {showDeviceDropdown && (
+                  <div className="absolute mt-1 w-full bg-white shadow-lg rounded-lg z-10 max-h-60 overflow-auto border border-gray-200">
+                    <div className="p-2 border-b border-gray-100">
+                      <p className="text-xs text-gray-500">Available Devices</p>
+                    </div>
+                    {isLoadingAvailable ? (
+                      <div className="p-2 text-center">
+                        <span className="inline-block h-4 w-4 border-2 border-t-blue-500 rounded-full animate-spin"></span>
+                        <span className="ml-2">Loading devices...</span>
+                      </div>
+                    ) : availableDevices?.length ? (
+                      availableDevices.map((device: any) => (
+                        <div 
+                          key={device.id}
+                          className="p-2 hover:bg-blue-50 cursor-pointer"
+                          onClick={() => { 
+                            setDeviceId(device.id.toString()); 
+                            setShowDeviceDropdown(false);
+                            setPlayerCount(1); // Reset to minimum when changing device
+                          }}
+                        >
+                          {getDeviceLabel(device)}
                         </div>
-                      )}
-                      {allDevices.map((device: Device) => {
-                        const deviceIdString = String(device.id);
-                        const isAvailable = isDeviceAvailable(device);
-                        
-                        return (
-                          <button
-                            key={deviceIdString}
-                            type="button"
-                            className={`block w-full text-left px-4 py-3 text-sm ${
-                              !isAvailable ? 'bg-gray-50 cursor-not-allowed opacity-60' : 'bg-white hover:bg-blue-50'
-                            } ${deviceId === deviceIdString ? 'bg-blue-100 font-medium' : ''}`}
-                            onClick={() => {
-                              if (isAvailable) {
-                                setDeviceId(deviceIdString);
-                                setPlayerCount(1);
-                                setShowDeviceDropdown(false);
-                              }
-                            }}
-                            disabled={!isAvailable}
-                          >
-                            <div className="flex justify-between items-center">
-                              <span className={!isAvailable ? 'text-gray-500' : ''}>
-                                {getDeviceLabel(device)}
-                              </span>
-                              {!isAvailable && (
-                                <span className="text-orange-600 text-xs font-medium bg-orange-100 px-2 py-1 rounded-full">
-                                  In Use
-                                </span>
-                              )}
+                      ))
+                    ) : (
+                      <div className="p-2 text-center text-gray-500">No available devices</div>
+                    )}
+                    
+                    {allDevices && allDevices.length > (availableDevices?.length || 0) && (
+                      <>
+                        <div className="p-2 border-t border-b border-gray-100">
+                          <p className="text-xs text-gray-500">In-Use Devices</p>
+                        </div>
+                        {allDevices
+                          .filter((device: any) => !isDeviceAvailable(device))
+                          .map((device: any) => (
+                            <div 
+                              key={device.id}
+                              className="p-2 text-gray-400 bg-gray-50 cursor-not-allowed"
+                            >
+                              {getDeviceLabel(device)} - Currently in use
                             </div>
-                          </button>
-                        );
-                      })}
-                    </>
+                          ))
+                        }
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+              {errors.deviceId && <p className="mt-1 text-sm text-red-600">{errors.deviceId}</p>}
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              {/* Number of Players */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Number of Players</label>
+                <div className="relative dropdown-container">
+                  <div 
+                    className={`flex p-3 border border-gray-300 rounded-lg cursor-pointer bg-white ${selectedDevice ? 'hover:border-blue-500' : 'opacity-75'} transition-colors`}
+                    onClick={() => { 
+                      // Only show dropdown if we have a device selected
+                      if (selectedDevice) setShowPlayerDropdown(!showPlayerDropdown);
+                    }}
+                  >
+                    <span className="flex-grow">{playerCount}</span>
+                    {selectedDevice && (
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    )}
+                  </div>
+                  {showPlayerDropdown && selectedDevice && (
+                    <div className="absolute mt-1 w-full bg-white shadow-lg rounded-lg z-10 max-h-60 overflow-auto border border-gray-200">
+                      {generateNumbers(selectedDevice.maxPlayers).map((num) => (
+                        <div 
+                          key={num}
+                          className="p-2 hover:bg-blue-50 cursor-pointer"
+                          onClick={() => { setPlayerCount(num); setShowPlayerDropdown(false); }}
+                        >
+                          {num}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {errors.playerCount && <p className="mt-1 text-sm text-red-600">{errors.playerCount}</p>}
+              </div>
+
+              {/* Token Number */}
+              {!existingOrderId && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">Token Number</label>
+                  <div className="relative dropdown-container">
+                    <div 
+                      className="flex p-3 border border-gray-300 rounded-lg cursor-pointer bg-white hover:border-blue-500 transition-colors"
+                      onClick={() => setShowTokenDropdown(!showTokenDropdown)}
+                    >
+                      <span className="flex-grow">{tokenNo}</span>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </div>
+                    {showTokenDropdown && (
+                      <div className="absolute mt-1 w-full bg-white shadow-lg rounded-lg z-10 max-h-60 overflow-auto border border-gray-200">
+                        {getAvailableTokenNumbers().map((num) => (
+                          <div 
+                            key={num}
+                            className="p-2 cursor-pointer hover:bg-blue-50 flex justify-between items-center"
+                            onClick={() => { setTokenNo(num); setShowTokenDropdown(false); }}
+                          >
+                            <span>{num}</span>
+                            <span className="text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Available</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {errors.tokenNo && <p className="mt-1 text-sm text-red-600">{errors.tokenNo}</p>}
+                  {isMainButton && (
+                    <button
+                      onClick={assignNextAvailableToken}
+                      className="mt-2 w-full p-1 text-blue-600 text-sm bg-blue-50 hover:bg-blue-100 rounded transition-colors"
+                    >
+                      ASSIGN NEXT AVAILABLE TOKEN
+                    </button>
                   )}
                 </div>
               )}
             </div>
-            {errors.deviceId && (
-              <p className="mt-1 text-sm text-red-600">{errors.deviceId}</p>
-            )}
-          </div>
 
-          <div className="flex flex-col sm:flex-row gap-4 mb-5">
-            {/* Number of Players Dropdown */}
-            <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Number of Players
-              </label>
-              <div className="relative dropdown-container">
-                <button
-                  type="button"
-                  className="block w-full text-left px-4 py-3 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white hover:bg-gray-50 transition-colors disabled:bg-gray-100 disabled:text-gray-400"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowPlayerDropdown(!showPlayerDropdown);
-                    setShowDeviceDropdown(false);
-                    setShowTokenDropdown(false);
-                  }}
-                  disabled={!selectedDevice}
-                >
-                  {playerCount}
-                  <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                    <svg className="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor">
-                      <path d="M7 7l3 3 3-3" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            {/* Order Selection - Only show if not using an existing order and not from main button */}
+            {!existingOrderId && !isMainButton && (
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Order</label>
+                <div className="relative dropdown-container">
+                  <div 
+                    className="flex p-3 border border-gray-300 rounded-lg cursor-pointer bg-white hover:border-blue-500 transition-colors"
+                    onClick={() => setShowOrderDropdown(!showOrderDropdown)}
+                  >
+                    <span className="flex-grow">
+                      {orderId === 'new' 
+                        ? 'Create new order' 
+                        : activeOrders.find((o: any) => o.id === orderId)?.orderNumber || orderId}
+                    </span>
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                     </svg>
-                  </span>
-                </button>
-                
-                {showPlayerDropdown && selectedDevice && (
-                  <div className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-xl py-1 overflow-auto border border-gray-200">
-                    {generateNumbers(selectedDevice.maxPlayers).map((num) => (
-                      <button
-                        key={num}
-                        type="button"
-                        className={`block w-full text-left px-4 py-3 text-sm hover:bg-blue-50 ${
-                          playerCount === num ? 'bg-blue-100' : ''
-                        }`}
-                        onClick={() => {
-                          setPlayerCount(num);
-                          setShowPlayerDropdown(false);
-                        }}
+                  </div>
+                  {showOrderDropdown && (
+                    <div className="absolute mt-1 w-full bg-white shadow-lg rounded-lg z-10 max-h-60 overflow-auto border border-gray-200">
+                      <div 
+                        className="p-2 hover:bg-blue-50 cursor-pointer text-blue-600 font-medium"
+                        onClick={() => { setOrderId('new'); setShowOrderDropdown(false); }}
                       >
-                        {num}
-                      </button>
-                    ))}
-                  </div>
-                )}
+                        <span className="flex items-center">
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                          </svg>
+                          Create new order
+                        </span>
+                      </div>
+                      
+                      {activeOrders.length > 0 && (
+                        <div className="border-t border-gray-100">
+                          <p className="text-xs text-gray-500 p-2">Existing orders for token #{tokenNo}</p>
+                          {activeOrders.map((order: any) => (
+                            <div 
+                              key={order.id}
+                              className="p-2 hover:bg-blue-50 cursor-pointer"
+                              onClick={() => { setOrderId(order.id); setShowOrderDropdown(false); }}
+                            >
+                              {order.orderNumber}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
+            )}
 
-            {/* Token Number Dropdown */}
-            <div className="flex-1">
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Token Number
-              </label>
-              <div className="relative dropdown-container">
-                <button
-                  type="button"
-                  className="block w-full text-left px-4 py-3 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-white hover:bg-gray-50 transition-colors"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setShowTokenDropdown(!showTokenDropdown);
-                    setShowDeviceDropdown(false);
-                    setShowPlayerDropdown(false);
-                  }}
-                >
-                  {tokenNo}
-                  <span className="absolute inset-y-0 right-0 flex items-center pr-2 pointer-events-none">
-                    <svg className="h-5 w-5 text-gray-400" viewBox="0 0 20 20" fill="none" stroke="currentColor">
-                      <path d="M7 7l3 3 3-3" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-                    </svg>
-                  </span>
-                </button>
-                
-                {showTokenDropdown && (
-                  <div className="absolute z-10 mt-1 w-full bg-white shadow-lg max-h-60 rounded-xl py-1 overflow-auto border border-gray-200">
-                    {generateNumbers(20).map((num) => {
-                      const assigned = isTokenAssigned(num);
-                      
-                      // Find the matching tokens for additional info
-                      const tokensWithThisNumber = existingTokens?.filter(
-                        (t: any) => t.tokenNo === num
-                      ) || [];
-                      
-                      // Count tokens with active sessions
-                      const tokensWithActiveSessions = tokensWithThisNumber.filter((t: any) => 
-                        t.sessions.some((s: any) => s.status === "ACTIVE")
-                      ).length;
-                      
-                      // Count tokens with pending bills
-                      const tokensWithPendingBills = tokensWithThisNumber.filter((t: any) => 
-                        t.bills?.some((b: any) => b.status === "PENDING")
-                      ).length;
-                      
-                      return (
-                        <button
-                          key={num}
-                          type="button"
-                          className={`block w-full text-left px-4 py-3 text-sm ${
-                            assigned ? 'bg-orange-50' : 'bg-white hover:bg-green-50'
-                          } ${tokenNo === num ? 'bg-blue-100' : ''}`}
-                          onClick={() => {
-                            setTokenNo(num);
-                            setShowTokenDropdown(false);
-                          }}
-                        >
-                          <div className="flex justify-between items-center">
-                            <span className={assigned ? 'text-gray-700' : 'text-gray-900'}>
-                              {num}
-                            </span>
-                            {assigned ? (
-                              <span className="text-orange-600 text-xs font-medium bg-orange-100 px-2 py-1 rounded-full">
-                                {tokensWithActiveSessions > 0 ? 'Active Sessions' : 'Pending Bill'}
-                              </span>
-                            ) : (
-                              <span className="text-green-600 text-xs font-medium bg-green-100 px-2 py-1 rounded-full">
-                                Available
-                              </span>
-                            )}
-                          </div>
-                        </button>
-                      );
-                    })}
-                  </div>
-                )}
+            {/* Display existing order info if using one */}
+            {existingOrderId && (
+              <div className="bg-blue-50 p-3 rounded border border-blue-100">
+                <p className="text-sm text-blue-800">
+                  Adding session to existing order. The token number and order are fixed.
+                </p>
               </div>
-              <button 
-                type="button"
-                className="mt-2 text-sm text-blue-600 hover:text-blue-800 font-medium transition-colors"
-                onClick={assignNextAvailableToken}
-              >
-                ASSIGN NEXT AVAILABLE TOKEN
-              </button>
+            )}
+            
+            {/* Comments Field */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Comments</label>
+              <textarea 
+                className="w-full border border-gray-300 p-3 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all"
+                value={comments}
+                onChange={(e) => setComments(e.target.value)}
+                rows={3}
+                placeholder="Add any notes about this session"
+              ></textarea>
             </div>
           </div>
-
-          {/* Comments */}
-          <div className="mb-5">
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Comments
-            </label>
-            <textarea
-              value={comments}
-              onChange={(e) => setComments(e.target.value)}
-              placeholder="Add any notes about this session"
-              rows={4}
-              className="block w-full px-4 py-3 border border-gray-300 rounded-xl shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 resize-none"
-            />
+          
+          {/* Button Row */}
+          <div className="mt-6 flex justify-end space-x-3">
+            <button
+              onClick={onClose}
+              className="px-6 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50 transition-colors"
+            >
+              CANCEL
+            </button>
+            <button
+              onClick={handleSubmit}
+              className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+              disabled={createSessionMutation.isPending}
+            >
+              {createSessionMutation.isPending ? (
+                <>
+                  <span className="inline-block h-4 w-4 border-2 border-t-white rounded-full animate-spin mr-2"></span>
+                  Creating...
+                </>
+              ) : (
+                'CREATE SESSION'
+              )}
+            </button>
           </div>
-        </div>
-
-        <div className="bg-gray-50 px-4 sm:px-6 py-4 flex justify-end space-x-4 border-t">
-          <button
-            className="px-4 py-2 text-blue-600 hover:text-blue-800 font-medium focus:outline-none transition-colors"
-            onClick={onClose}
-          >
-            CANCEL
-          </button>
-          <button
-            className="px-6 py-2 bg-blue-600 text-white rounded-xl hover:bg-blue-700 font-medium focus:outline-none disabled:opacity-50 transition-colors shadow-sm"
-            onClick={handleSubmit}
-            disabled={createSessionMutation.isPending}
-          >
-            {createSessionMutation.isPending ? 'CREATING...' : 'CREATE SESSION'}
-          </button>
         </div>
       </div>
     </div>

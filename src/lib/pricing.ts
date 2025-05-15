@@ -13,15 +13,11 @@ interface PlayerFramePrice {
   [players: number]: FramePrice;
 }
 
-type GamePricing = {
-  "PS5": PlayerTimePrice;
-  "PS4": PlayerTimePrice;
-  "Racing": PlayerTimePrice;
-  "VR": PlayerTimePrice;
-  "VR Racing": PlayerTimePrice;
-  "Pool": PlayerTimePrice;
-  "Frame": PlayerFramePrice;
-};
+// Define game types as string literals
+export type GameType = "PS5" | "PS4" | "Racing" | "VR" | "VR Racing" | "Pool" | "Frame";
+
+// Define full pricing structure
+type GamePricing = Record<GameType, PlayerTimePrice | PlayerFramePrice>;
 
 // Pricing data structure for gaming cafe
 export const pricingChart: GamePricing = {
@@ -53,6 +49,47 @@ export const pricingChart: GamePricing = {
   }
 };
 
+// Mapping of alternative/variant device names to their standard form in pricing chart
+const deviceTypeMap: Record<string, GameType> = {
+  "FRAME": "Frame",
+  "PS5": "PS5",
+  "PS4": "PS4",
+  "RACING": "Racing",
+  "VR": "VR",
+  "VR RACING": "VR Racing",
+  "POOL": "Pool",
+  "CONSOLE": "PS4",  // Default console to PS4 pricing if specific type not provided
+  "ARCADE": "Racing" // Default arcade to Racing pricing if specific type not provided
+};
+
+/**
+ * Normalizes device type to match pricing chart keys
+ */
+function getNormalizedDeviceType(deviceType: string): GameType {
+  if (!deviceType) {
+    return "PS4" as const;
+  }
+  
+  const upperDeviceType = deviceType.toUpperCase();
+  
+  // Direct match
+  if (upperDeviceType in deviceTypeMap) {
+    return deviceTypeMap[upperDeviceType] as GameType;
+  }
+  
+  // Partial match
+  for (const [key, value] of Object.entries(deviceTypeMap)) {
+    if (upperDeviceType.includes(key)) {
+      console.log(`Mapped device type "${deviceType}" to "${value}" based on partial match`);
+      return value;
+    }
+  }
+  
+  // Default fallback
+  console.warn(`No pricing mapping found for device type "${deviceType}", defaulting to PS4 pricing`);
+  return "PS4";
+}
+
 /**
  * Rounds the time played to the billing interval following given rules:
  * - Up to 7 minutes: 0 charge
@@ -70,45 +107,32 @@ export function roundTimeToCharge(minutesPlayed: number): number {
 }
 
 /**
- * Calculates the price based on game type, player count, and duration
+ * Default pricing when no specific pricing is available
+ * Uses PS4 single player as the baseline
  */
-export function calculatePrice(
-  game: keyof GamePricing, 
-  players: number, 
-  minutesPlayed: number, 
-  framesPlayed = 0
-): number {
-  // Handle Frame game separately
-  if (game === "Frame") {
-    // For Frame, price is Rs 50 * number of players
-    // (framesPlayed parameter is ignored as requested)
-    return 50 * players;
-  }
+function getDefaultPricing(minutes: number): number {
+  // Basic pricing structure if nothing else is available
+  if (minutes <= 15) return 25;
+  if (minutes <= 30) return 50;
+  if (minutes <= 45) return 65;
+  if (minutes <= 60) return 80;
+  return Math.round((80/60) * minutes); // Pro-rate based on hourly rate
+}
 
-  // Round the time played according to rules
-  const roundedTime = roundTimeToCharge(minutesPlayed);
-
-  if (roundedTime === 0) {
-    return 0; // No charge for playtime less or equal to 7 minutes
-  }
-
-  // Get the pricing for this game and player count
-  const gameData = pricingChart[game];
-  // Use default player count (1) if specified player count is not available
-  const playerCount = gameData[players] ? players : 1;
-  const playerPricing = gameData[playerCount];
-
-  if (!playerPricing) {
-    console.error(`No pricing data for ${game} with ${players} players`);
-    return 0;
-  }
-
+/**
+ * Calculate price based on available time slots in pricing data
+ */
+function calculatePriceFromTimeSlots(playerPricing: TimePrice, roundedTime: number): number {
   // If rounded time is within provided pricing intervals (15,30,45,60)
   const maxInterval = 60;
   if (roundedTime <= maxInterval) {
     // Use exact time if available
     if (roundedTime in playerPricing) {
-      return playerPricing[roundedTime];
+      const price = playerPricing[roundedTime];
+      if (typeof price === 'number') {
+        return price;
+      }
+      return 0;
     }
     
     // Otherwise, find the next highest interval
@@ -118,70 +142,163 @@ export function calculatePrice(
       
     for (const time of availableTimes) {
       if (roundedTime <= time) {
-        return playerPricing[time];
+        const price = playerPricing[time];
+        if (typeof price === 'number') {
+          return price;
+        }
+        return 0;
       }
     }
     
     // Use the highest available time slot as fallback
-    const lastTimeSlot = availableTimes[availableTimes.length - 1];
-    return playerPricing[lastTimeSlot] || 0;
+    if (availableTimes.length > 0) {
+      const lastTimeSlot = availableTimes[availableTimes.length - 1];
+      if (lastTimeSlot && lastTimeSlot in playerPricing) {
+        const price = playerPricing[lastTimeSlot];
+        if (typeof price === 'number') {
+          return price;
+        }
+      }
+    }
+    return 0;
   } else {
     // Beyond 60 minutes, apply per minute rate based on 60-minute price with rounding
     if (60 in playerPricing) {
       const price60 = playerPricing[60];
-      
-      // Calculate price per minute
-      const pricePerMinute = price60 / 60;
+      if (typeof price60 === 'number') {
+        // Calculate price per minute
+        const pricePerMinute = price60 / 60;
+        // Use the rounded minutes for billing
+        return pricePerMinute * roundedTime;
+      }
+    }
+    console.error(`No 60-minute pricing data found for calculation`);
+    return getDefaultPricing(roundedTime);
+  }
+}
 
-      // Use the rounded minutes for billing
-      return pricePerMinute * roundedTime;
-    } else {
-      console.error(`No 60-minute pricing data for ${game} with ${players} players`);
+/**
+ * Calculates the price based on game type, player count, and duration
+ */
+export function calculatePrice(
+  rawGameType: string | GameType, 
+  rawPlayerCount: number | undefined, 
+  minutesPlayed: number
+): number {
+  try {
+    // Handle empty/undefined inputs
+    if (!rawGameType) {
+      console.warn("No game type provided for pricing calculation");
       return 0;
     }
+    
+    // Ensure valid players count
+    const players = Math.max(1, rawPlayerCount || 1);
+    
+    // Handle Frame game separately - check for any case variation
+    if (typeof rawGameType === 'string' && rawGameType.toUpperCase() === "FRAME") {
+      // For Frame, price is Rs 50 * number of players
+      return 50 * players;
+    }
+
+    // Normalize the device type to match pricing chart
+    const gameType = getNormalizedDeviceType(String(rawGameType));
+    
+    // Round the time played according to rules
+    const roundedTime = roundTimeToCharge(minutesPlayed);
+
+    if (roundedTime === 0) {
+      return 0; // No charge for playtime less or equal to 7 minutes
+    }
+    
+    // Get the pricing for this game and player count
+    const gameData = pricingChart[gameType];
+    
+    // For Frame pricing, which uses a different structure
+    if (gameType === "Frame") {
+      // Frame pricing is fixed per player
+      const basePricePerPlayer = 50;
+      return basePricePerPlayer * players;
+    }
+    
+    // For time-based pricing (PS4, PS5, etc.)
+    // Use default player count (1) if specified player count is not available
+    const playerCount = (players in gameData) ? players : 1;
+    const pricing = gameData[playerCount];
+    
+    if (!pricing) {
+      console.error(`No pricing data for ${gameType} with ${players} players`);
+      return getDefaultPricing(roundedTime);
+    }
+    
+    // Handle special case for Frame pricing (number instead of object)
+    if (typeof pricing === 'number') {
+      return pricing * players;
+    }
+    
+    return calculatePriceFromTimeSlots(pricing as TimePrice, roundedTime);
+  } catch (error) {
+    console.error("Error in calculatePrice:", error);
+    // Default to basic pricing if all else fails
+    const roundedTime = roundTimeToCharge(minutesPlayed);
+    return getDefaultPricing(roundedTime);
   }
 }
 
 /**
  * Helper function to calculate duration in minutes between two dates
- * @param startTime Starting date/time
- * @param endTime Ending date/time (defaults to current time if not provided)
  */
 export function calculateDuration(startTime: Date | string, endTime?: Date | string): number {
-  const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
-  const end = endTime 
-    ? (typeof endTime === 'string' ? new Date(endTime) : endTime) 
-    : new Date();
-  
-  // Calculate duration in milliseconds and convert to minutes
-  const durationInMs = end.getTime() - start.getTime();
-  return Math.ceil(durationInMs / (1000 * 60));
+  try {
+    const start = typeof startTime === 'string' ? new Date(startTime) : startTime;
+    const end = endTime 
+      ? (typeof endTime === 'string' ? new Date(endTime) : endTime) 
+      : new Date();
+    
+    // Calculate duration in milliseconds and convert to minutes
+    const durationInMs = end.getTime() - start.getTime();
+    return Math.ceil(durationInMs / (1000 * 60));
+  } catch (error) {
+    console.error("Error calculating duration:", error);
+    return 0;
+  }
 }
 
 /**
  * Gets the hourly rate for a game type and player count
  * Used for display purposes in the UI
  */
-export function getHourlyRate(game: keyof GamePricing, players: number): number {
-  if (game === "Frame") {
-    return 50 * players; // Return Rs 50 * players for Frame
+export function getHourlyRate(rawGameType: string | GameType, rawPlayerCount: number): number {
+  try {
+    // Default to standard player count
+    const players = Math.max(1, rawPlayerCount || 1);
+    
+    // Normalize device type
+    const gameType = getNormalizedDeviceType(String(rawGameType || ""));
+    
+    if (gameType === "Frame") {
+      return 50 * players; // Return Rs 50 * players for Frame
+    }
+    
+    const gameData = pricingChart[gameType];
+    if (!gameData) return 80; // Default hourly rate
+    
+    const playerCount = gameData[players] ? players : 1;
+    const playerPricing = gameData[playerCount];
+    
+    if (playerPricing && typeof playerPricing !== 'number' && 60 in playerPricing) {
+      return playerPricing[60];
+    }
+    
+    return 80; // Default hourly rate
+  } catch (error) {
+    console.error("Error getting hourly rate:", error);
+    return 80; // Default hourly rate
   }
-  
-  const gameData = pricingChart[game];
-  const playerCount = gameData[players] ? players : 1;
-  const playerPricing = gameData[playerCount];
-  
-  if (playerPricing && 60 in playerPricing) {
-    return playerPricing[60];
-  }
-  
-  return 0;
 }
 
 /**
  * Calculate the correct cost for a session based on its type and duration
- * @param session Session with device, player count, and duration information
- * @returns The calculated cost
  */
 export function calculateSessionCost(session: {
   device: { type: string; };
@@ -191,25 +308,39 @@ export function calculateSessionCost(session: {
   duration?: number;
   cost?: number | string;
 }): number {
-  // For Frame devices, use player count based pricing
-  if (session.device.type === "FRAME") {
-    return 50 * session.playerCount;
-  }
-  
-  // For devices with stored non-zero cost, use that cost
-  if (session.cost && Number(session.cost) > 0) {
-    return Number(session.cost);
-  }
-  
-  // For time-based pricing (PS4, PS5, etc.)
   try {
-    // Calculate duration
+    // Validation
+    if (!session) {
+      console.error("Session object is null or undefined");
+      return 0;
+    }
+    
+    if (!session.device || !session.device.type) {
+      console.error("Missing device type in session", session);
+      return 0;
+    }
+    
+    // For Frame devices, use player count based pricing
+    if (session.device.type.toUpperCase() === "FRAME") {
+      return 50 * Math.max(1, session.playerCount || 1);
+    }
+    
+    // For devices with stored non-zero cost, use that cost
+    const storedCost = parseFloat(String(session.cost || "0"));
+    if (!isNaN(storedCost) && storedCost > 0) {
+      return storedCost;
+    }
+    
+    // For time-based pricing (PS4, PS5, etc.)
     let minutes = 0;
+    
     if (session.status === "ACTIVE" && session.startTime) {
+      // Active session - calculate duration from start time to now
       const start = typeof session.startTime === 'string' ? new Date(session.startTime) : session.startTime;
       const now = new Date();
       minutes = Math.ceil((now.getTime() - start.getTime()) / (1000 * 60));
     } else {
+      // Completed session - use stored duration
       minutes = session.duration || 0;
     }
     
@@ -220,20 +351,18 @@ export function calculateSessionCost(session: {
     
     // Calculate price based on device, players, and time
     return calculatePrice(
-      session.device.type as any,
+      session.device.type,
       session.playerCount,
       minutes
     );
   } catch (error) {
-    console.error("Error calculating time-based price:", error);
+    console.error("Error calculating session cost:", error, session);
     return 0;
   }
 }
 
 /**
  * Calculate the total cost for multiple sessions
- * @param sessions Array of sessions to calculate total for
- * @returns The total cost
  */
 export function calculateTotalCost(sessions: Array<{
   device: { type: string; };
@@ -243,11 +372,22 @@ export function calculateTotalCost(sessions: Array<{
   duration?: number;
   cost?: number | string;
 }>): number {
-  if (!sessions || sessions.length === 0) {
+  if (!sessions || !Array.isArray(sessions) || sessions.length === 0) {
     return 0;
   }
   
-  return sessions.reduce((total, session) => {
-    return total + calculateSessionCost(session);
-  }, 0);
+  let total = 0;
+  
+  for (const session of sessions) {
+    try {
+      const sessionCost = calculateSessionCost(session);
+      console.log(`Session cost for ${session.device?.type} (${session.playerCount || 1} players): ₹${sessionCost}`);
+      total += sessionCost;
+    } catch (error) {
+      console.error("Error calculating session cost:", error, session);
+    }
+  }
+  
+  console.log(`Total cost for ${sessions.length} sessions: ₹${total}`);
+  return total;
 } 

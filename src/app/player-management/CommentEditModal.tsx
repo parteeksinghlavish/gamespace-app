@@ -2,20 +2,21 @@
 
 import React, { useState, useEffect } from 'react';
 import { api } from '~/trpc/react';
+import type { Session } from '~/types';
 
 interface CommentEditModalProps {
   isOpen: boolean;
   onClose: () => void;
-  session: any;
+  session: Session;
   onSuccess: () => void;
 }
 
 export default function CommentEditModal({ isOpen, onClose, session, onSuccess }: CommentEditModalProps) {
-  const [comments, setComments] = useState('');
+  const [comments, setComments] = useState<string>('');
 
   useEffect(() => {
     if (session) {
-      setComments(session.comments || '');
+      setComments(session.comments ?? '');
     }
   }, [session]);
 
