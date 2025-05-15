@@ -849,8 +849,10 @@ export const playerManagementRouter = createTRPCRouter({
         billId: z.number(),
         status: z.enum([PaymentStatus.PENDING, PaymentStatus.PAID, PaymentStatus.DUE]),
         correctedAmount: z.number().optional(),
+        amountReceived: z.number().optional(), // Add amountReceived parameter
         paymentMethod: z.string().optional(),
         paymentReference: z.string().optional(),
+        customerId: z.number().optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -903,9 +905,34 @@ export const playerManagementRouter = createTRPCRouter({
         updateData.paymentReference = input.paymentReference;
       }
       
+      // Save the amount received if provided
+      if (input.amountReceived !== undefined) {
+        updateData.amountReceived = input.amountReceived;
+        console.log(`Saving amount received: ${input.amountReceived}`);
+      }
+      
       // Set paid time if marking as paid
       if (input.status === PaymentStatus.PAID) {
         updateData.paidAt = now;
+      }
+
+      // Associate with customer if marking as DUE and customerId provided
+      if (input.status === PaymentStatus.DUE) {
+        if (input.customerId) {
+          // Check if the customer exists
+          const customerExists = await ctx.db.customer.findUnique({
+            where: { id: input.customerId }
+          });
+
+          if (!customerExists) {
+            throw new TRPCError({
+              code: "NOT_FOUND",
+              message: "Customer not found",
+            });
+          }
+
+          updateData.customerId = input.customerId;
+        }
       }
 
       // End any active sessions when bill is marked as PAID or DUE
@@ -995,8 +1022,9 @@ export const playerManagementRouter = createTRPCRouter({
         data: updateData,
         include: {
           token: true,
-          order: true
-        }
+          order: true,
+          customer: true,
+        },
       });
 
       // If bill is marked as PAID or DUE, update the order status to COMPLETED
@@ -1252,5 +1280,65 @@ export const playerManagementRouter = createTRPCRouter({
         message: error instanceof Error ? error.message : "Failed to get unpaid bills"
       });
     }
+  }),
+
+  // Create a new customer
+  createCustomer: protectedProcedure
+    .input(
+      z.object({
+        name: z.string(),
+        phone: z.string().optional(),
+        email: z.string().optional(),
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      const customer = await ctx.db.customer.create({
+        data: {
+          name: input.name,
+          phone: input.phone,
+          email: input.email,
+        },
+      });
+
+      return customer;
+    }),
+
+  // Get all customers
+  getCustomers: protectedProcedure
+    .query(async ({ ctx }) => {
+      const customers = await ctx.db.customer.findMany({
+        orderBy: { name: 'asc' },
+      });
+      return customers;
+    }),
+
+  // Get customers with due bills
+  getCustomersWithDueBills: protectedProcedure
+    .query(async ({ ctx }) => {
+      const customers = await ctx.db.customer.findMany({
+        where: {
+          bills: {
+            some: {
+              status: PaymentStatus.DUE,
+            },
+          },
+        },
+        include: {
+          bills: {
+            where: {
+              status: PaymentStatus.DUE,
+            },
+            include: {
+              token: true,
+              order: true,
+            },
+            orderBy: {
+              generatedAt: 'desc',
+            },
+          },
+        },
+        orderBy: { name: 'asc' },
+      });
+      return customers;
   }),
 }); 

@@ -10,6 +10,7 @@ import NewSessionModal from './NewSessionModal';
 import CommentEditModal from './CommentEditModal';
 import BillModal from './BillModal';
 import UnpaidBillsContent from './UnpaidBillsContent';
+import { useBillingManager } from '~/lib/hooks/useBillingManager';
 
 // Helper functions
 function formatTime(date: Date | string): string {
@@ -65,10 +66,18 @@ export default function PlayerManagementContent() {
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [showBillModal, setShowBillModal] = useState(false);
   const [selectedSession, setSelectedSession] = useState<any>(null);
-  const [selectedTokenId, setSelectedTokenId] = useState<number | null>(null);
-  const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [editingPlayerCount, setEditingPlayerCount] = useState<number | null>(null);
   const [newPlayerCount, setNewPlayerCount] = useState<number>(1);
+  
+  // Use our centralized billing hook for bill-related operations
+  const {
+    showBillModal: billModalOpen,
+    selectedBillId,
+    generateBillForToken,
+    generateBillForOrder,
+    handleBillModalClose, 
+    handleBillUpdated
+  } = useBillingManager();
 
   // Query to fetch today's sessions
   const {
@@ -145,6 +154,9 @@ export default function PlayerManagementContent() {
     }, 3000);
   };
 
+  // Local state for session management
+  const [localOrderId, setLocalOrderId] = useState<string | null>(null);
+  
   // Handlers
   const handleEndSession = (sessionId: number) => {
     endSessionMutation.mutate({ sessionId });
@@ -156,24 +168,22 @@ export default function PlayerManagementContent() {
   };
 
   const handleGenerateBill = (tokenId: number) => {
-    setSelectedTokenId(tokenId);
-    setSelectedOrderId(null);
-    setShowBillModal(true);
+    // Use the centralized billing manager
+    generateBillForToken(tokenId);
   };
 
   const handleGenerateOrderBill = (orderId: string) => {
-    setSelectedOrderId(orderId);
-    setSelectedTokenId(null); 
-    setShowBillModal(true);
+    // Use the centralized billing manager
+    generateBillForOrder(orderId);
   };
 
   const handleAddToOrder = (orderId: string) => {
-    setSelectedOrderId(orderId);
+    setLocalOrderId(orderId);
     setShowNewSessionModal(true);
   };
 
   const handleCreateNewSession = () => {
-    setSelectedOrderId(null);
+    setLocalOrderId(null);
     setShowNewSessionModal(true);
   };
 
@@ -677,15 +687,15 @@ export default function PlayerManagementContent() {
           isOpen={showNewSessionModal}
           onClose={() => {
             setShowNewSessionModal(false);
-            setSelectedOrderId(null);
+            setLocalOrderId(null);
           }}
           onSuccess={() => {
             refetch();
             setShowNewSessionModal(false);
-            setSelectedOrderId(null);
+            setLocalOrderId(null);
           }}
-          existingOrderId={selectedOrderId || undefined}
-          isMainButton={!selectedOrderId}
+          existingOrderId={localOrderId || undefined}
+          isMainButton={!localOrderId}
         />
       )}
 
@@ -701,19 +711,12 @@ export default function PlayerManagementContent() {
         />
       )}
 
-      {showBillModal && ((selectedTokenId && !selectedOrderId) || (selectedOrderId && !selectedTokenId)) && (
+      {billModalOpen && (
         <BillModal
-          isOpen={showBillModal}
-          onClose={() => {
-            setShowBillModal(false);
-            setSelectedTokenId(null);
-            setSelectedOrderId(null);
-          }}
-          tokenId={selectedTokenId || undefined}
-          orderId={selectedOrderId || undefined}
-          onSuccess={() => {
-            refetch();
-          }}
+          isOpen={billModalOpen}
+          onClose={handleBillModalClose}
+          billId={selectedBillId || undefined}
+          onSuccess={handleBillUpdated}
         />
       )}
     </div>

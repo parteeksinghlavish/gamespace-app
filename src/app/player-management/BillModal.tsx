@@ -4,6 +4,48 @@ import React, { useState, useEffect } from 'react';
 import { api } from '~/trpc/react';
 import { PaymentStatus } from '~/lib/constants';
 import { roundTimeToCharge, calculatePrice, calculateSessionCost, calculateTotalCost } from "~/lib/pricing";
+import { formatCurrency, formatDate } from "~/lib/utils";
+import { format } from "date-fns";
+
+// This Bill type needs to be defined locally since we removed the import
+interface Bill {
+  id: number;
+  tokenId: number;
+  orderId?: string;
+  status: string;
+  amount: number;
+  correctedAmount?: number;
+  amountReceived?: number;
+  generatedAt: Date;
+  paidAt?: Date;
+  paymentMethod?: string;
+  paymentReference?: string;
+  token?: {
+    id: number;
+    tokenNo: number;
+    sessions: Session[];
+  };
+  order?: {
+    id: string;
+    orderNumber: string;
+    status: string;
+    sessions: Session[];
+  };
+  customerId?: number;
+  customer?: {
+    id: number;
+    name: string;
+    phone?: string;
+  };
+}
+
+interface Customer {
+  id: number;
+  name: string;
+  phone?: string | null;
+  email?: string | null;
+  bills?: Bill[];
+}
 
 // Define types for our data
 interface Device {
@@ -41,31 +83,6 @@ interface Token {
   sessions: Session[];
 }
 
-// Define complete Bill type
-interface Bill {
-  id: number;
-  tokenId: number;
-  orderId?: string;
-  status: string;
-  amount: number;
-  correctedAmount?: number;
-  generatedAt: Date;
-  paidAt?: Date;
-  paymentMethod?: string;
-  paymentReference?: string;
-  token?: {
-    id: number;
-    tokenNo: number;
-    sessions: Session[];
-  };
-  order?: {
-    id: string;
-    orderNumber: string;
-    status: string;
-    sessions: Session[];
-  };
-}
-
 interface BillModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -73,33 +90,6 @@ interface BillModalProps {
   orderId?: string;
   billId?: number;
   onSuccess: () => void;
-}
-
-// Helper functions
-function formatDate(date: Date | string): string {
-  const d = typeof date === 'string' ? new Date(date) : date;
-  return d.toLocaleString('en-US', {
-    year: 'numeric',
-    month: 'short',
-    day: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-}
-
-function formatCurrency(amount: number | string | null | undefined): string {
-  if (amount === null || amount === undefined) {
-    return '₹0.00';
-  }
-  
-  const num = typeof amount === 'string' ? parseFloat(amount) : amount;
-  
-  // Check if num is NaN after conversion
-  if (isNaN(num)) {
-    return '₹0.00';
-  }
-  
-  return `₹${num.toFixed(2)}`;
 }
 
 // Calculate duration between two dates in minutes
@@ -171,7 +161,8 @@ function getBilledTime(session: Session): string {
 function getDisplayCost(session: Session): string {
   try {
     // Use the centralized function for session cost calculation
-    return formatCurrency(calculateSessionCost(session));
+    const cost = calculateSessionCost(session);
+    return formatCurrency(cost ?? 0);
   } catch (error) {
     console.error("Error calculating session cost:", error);
     return '₹0.00';
@@ -186,8 +177,45 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
   // Add local state to track bill status for immediate UI updates
   const [currentStatus, setCurrentStatus] = useState<string | null>(null);
   const [currentAmount, setCurrentAmount] = useState<number | null>(null);
+  const [amountReceived, setAmountReceived] = useState<string>("");
+  const [selectedCustomerId, setSelectedCustomerId] = useState<number | null>(null);
+  const [showCustomerForm, setShowCustomerForm] = useState(false);
+  const [newCustomerName, setNewCustomerName] = useState("");
+  const [newCustomerPhone, setNewCustomerPhone] = useState("");
+  // Add state to control when to show customer selection
+  const [showDueForm, setShowDueForm] = useState(false);
 
   const utils = api.useUtils();
+
+  // Add API queries for customers
+  const { data: customers, isLoading: customersLoading } = api.playerManagement.getCustomers.useQuery(
+    undefined,
+    { enabled: isOpen }
+  );
+
+  const { data: customersWithDueBills, isLoading: dueBillsCustomersLoading } = 
+    api.playerManagement.getCustomersWithDueBills.useQuery(
+      undefined, 
+      { enabled: isOpen }
+    );
+
+  const createCustomerMutation = api.playerManagement.createCustomer.useMutation({
+    onSuccess: (newCustomer) => {
+      setSelectedCustomerId(newCustomer.id);
+      setShowCustomerForm(false);
+      setNewCustomerName("");
+      setNewCustomerPhone("");
+      showToast('Customer added successfully', 'success');
+      
+      // Refresh customer lists
+      utils.playerManagement.getCustomers.invalidate();
+      utils.playerManagement.getCustomersWithDueBills.invalidate();
+    },
+    onError: (error) => {
+      console.error("Error creating customer:", error);
+      showToast('Error creating customer: ' + error.message, 'error');
+    }
+  });
 
   // Mutation to generate a bill for a token
   const generateBillMutation = api.playerManagement.generateBill.useMutation({
@@ -224,7 +252,8 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
       enabled: !!activeBillId,
       refetchOnWindowFocus: true,
       refetchOnMount: true,
-      refetchInterval: 3000, // Refresh every 3 seconds while modal is open
+      // Disable automatic refetching when customer selection form is visible
+      refetchInterval: showDueForm ? false : 3000, // Only refresh every 3 seconds when not selecting a customer
       staleTime: 0, // Consider data always stale to ensure fresh fetches
     }
   );
@@ -301,6 +330,14 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
         // Don't allow zero amounts for bills with active sessions
         if (calculatedTotal > 0 || !sessions.some(s => s.status === "ACTIVE")) {
           setCurrentAmount(calculatedTotal);
+          
+          // If we have existing amount received, display it
+          if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+            setAmountReceived(String(billData.amountReceived));
+          } else if (currentStatus !== PaymentStatus.PAID) {
+            // Initialize amount received field with the calculated total for convenience
+            setAmountReceived(String(calculatedTotal));
+          }
         } else {
           // Use corrected amount or original amount as fallback
           const fallbackAmount = billData.correctedAmount !== undefined 
@@ -308,6 +345,13 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
             : billData.amount;
           console.log(`Using fallback amount: ₹${fallbackAmount}`);
           setCurrentAmount(fallbackAmount);
+          
+          // Also update amount received if needed
+          if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+            setAmountReceived(String(billData.amountReceived));
+          } else if (currentStatus !== PaymentStatus.PAID) {
+            setAmountReceived(String(fallbackAmount));
+          }
         }
       } else {
         // Fallback to bill amount if sessions not available
@@ -316,9 +360,16 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
           : billData.amount;
         console.log(`No sessions found, using bill amount: ₹${amount}`);
         setCurrentAmount(amount);
+        
+        // Also update amount received if needed
+        if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+          setAmountReceived(String(billData.amountReceived));
+        } else if (currentStatus !== PaymentStatus.PAID) {
+          setAmountReceived(String(amount));
+        }
       }
     }
-  }, [bill]);
+  }, [bill, currentStatus]);
 
   // Mutation to update bill status
   const updateBillStatusMutation = api.playerManagement.updateBillStatus.useMutation({
@@ -337,14 +388,21 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
       
       setCurrentAmount(updatedAmount);
       
-      // IMPORTANT: First invalidate all the queries that might be affected
+      // Force immediate cache invalidation with stronger approach for dev mode
+      // First, reset the entire router cache to handle dev mode quirks
+      utils.invalidate();
+      
+      // Then specifically target individual queries for more focused updates
       utils.playerManagement.getBill.invalidate();
       utils.playerManagement.getTodaySessions.invalidate();
       utils.playerManagement.getUnpaidBills.invalidate();
       utils.playerManagement.getAvailableDevices.invalidate();
+      utils.playerManagement.getCustomersWithDueBills.invalidate();
       
-      // Explicitly trigger refetch for unpaid bills to ensure UI updates
-      utils.playerManagement.getUnpaidBills.refetch();
+      // Force aggressive refetches of critical data
+      setTimeout(() => {
+        utils.playerManagement.getUnpaidBills.refetch();
+      }, 100);
       
       // Show success message and call callback
       showToast('Bill updated successfully', 'success');
@@ -355,7 +413,7 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
       // Close modal after delay - make it longer to ensure queries complete
       setTimeout(() => {
         if (onClose) onClose();
-      }, 1500);
+      }, 2000);
     },
     onError: (error) => {
       console.error("Error updating bill:", error);
@@ -371,6 +429,12 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
       // If billId is provided directly, use it
       setActiveBillId(billId);
       setIsGenerating(false);
+      
+      // Force refetch the bill to ensure the latest status
+      setTimeout(() => {
+        utils.playerManagement.getBill.invalidate({ billId });
+        utils.playerManagement.getBill.refetch({ billId });
+      }, 100);
     } else if (tokenId && !activeBillId) {
       // Generate a bill for the token if needed
       setIsGenerating(true);
@@ -381,14 +445,29 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
       generateOrderBillMutation.mutate({ orderId });
     }
 
+    // Reset amountReceived when modal opens
+    setAmountReceived("");
+
     return () => {
       // Reset state when modal closes
       if (!isOpen) {
         setActiveBillId(null);
         setIsGenerating(false);
+        setAmountReceived("");
       }
     };
   }, [isOpen, tokenId, orderId, billId]);
+
+  // Reset selected customer when modal opens or the bill changes
+  useEffect(() => {
+    if (isOpen && bill) {
+      // Use type assertion to access the customerId property
+      const billData = bill as unknown as Bill;
+      setSelectedCustomerId(billData.customerId || null);
+    } else {
+      setSelectedCustomerId(null);
+    }
+  }, [isOpen, bill]);
 
   // Simple toast notification
   const showToast = (message: string, type: 'success' | 'error') => {
@@ -406,179 +485,55 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
 
   // Helper function to handle bill status updates
   const handleBillStatusChange = (newStatus: PaymentStatus) => {
+    // Check if we have an active bill ID
     if (activeBillId && bill) {
       try {
-        console.log(`Starting bill status change to ${newStatus} for bill ID:`, activeBillId);
-        
-        // Immediately update local state for responsive UI
-        setCurrentStatus(newStatus);
-        
-        // Type assertion for bill data
-        const billData = bill as unknown as Bill;
-        
-        // Get all sessions from either order or token
-        const allSessions = isOrderBill && billData?.order?.sessions 
-          ? billData.order.sessions 
-          : billData?.token?.sessions || [];
-        
-        console.log("Session source:", isOrderBill ? "order" : "token");
-        console.log("Number of sessions:", allSessions.length);
-        
-        // Calculate the total manually for ALL device types
-        let correctTotal = 0;
-        
-        console.log(`Calculating total for ${allSessions.length} sessions`);
-        
-        // Use each session's existing cost when available or calculate directly
-        allSessions.forEach(session => {
-          let sessionCost = 0;
-          
-          // For Frame devices, always use fixed pricing
-          if (session.device?.type === "FRAME") {
-            sessionCost = 50 * (session.playerCount || 1);
-            console.log(`Frame session ${session.id}: ${session.playerCount} players = ₹${sessionCost}`);
-          }
-          // For ended sessions with existing cost
-          else if (session.status !== "ACTIVE" && session.cost) {
-            sessionCost = Number(session.cost);
-            console.log(`Ended session ${session.id}: stored cost = ₹${sessionCost}`);
-          }
-          // For active sessions, use direct calculation
-          else if (session.status === "ACTIVE") {
-            const durationInMinutes = Math.ceil((new Date().getTime() - new Date(session.startTime).getTime()) / (1000 * 60));
-            
-            // Simple calculation based on hourly rate
-            const hourlyRate = Number(session.device?.hourlyRate || 0);
-            // Round time according to the 7-minute rule
-            const roundedMinutes = durationInMinutes <= 7 ? 0 : Math.ceil((durationInMinutes - 7) / 15) * 15;
-            
-            // Calculate cost based on device type
-            try {
-              // Use the centralized pricing function
-              sessionCost = calculatePrice(
-                session.device?.type as any,
-                session.playerCount || 1,
-                durationInMinutes
-              );
-              console.log(`Active session ${session.id}: calculated cost using price function = ₹${sessionCost}`);
-            } catch (error) {
-              console.error("Error calculating session cost in bill modal:", error);
-              // Fallback calculation for device types not handled by main function
-              switch(session.device?.type) {
-                case "PS5":
-                  if (session.playerCount <= 1) {
-                    if (roundedMinutes <= 15) sessionCost = 40;
-                    else if (roundedMinutes <= 30) sessionCost = 80;
-                    else if (roundedMinutes <= 45) sessionCost = 100;
-                    else if (roundedMinutes <= 60) sessionCost = 120;
-                    else sessionCost = 120 * (roundedMinutes / 60);
-                  } else if (session.playerCount <= 3) {
-                    if (roundedMinutes <= 15) sessionCost = 60;
-                    else if (roundedMinutes <= 30) sessionCost = 120;
-                    else if (roundedMinutes <= 45) sessionCost = 150;
-                    else if (roundedMinutes <= 60) sessionCost = 180;
-                    else sessionCost = 180 * (roundedMinutes / 60);
-                  } else {
-                    if (roundedMinutes <= 15) sessionCost = 70;
-                    else if (roundedMinutes <= 30) sessionCost = 140;
-                    else if (roundedMinutes <= 45) sessionCost = 170;
-                    else if (roundedMinutes <= 60) sessionCost = 200;
-                    else sessionCost = 200 * (roundedMinutes / 60);
-                  }
-                  break;
-                case "PS4":
-                  if (session.playerCount <= 1) {
-                    if (roundedMinutes <= 15) sessionCost = 25;
-                    else if (roundedMinutes <= 30) sessionCost = 50;
-                    else if (roundedMinutes <= 45) sessionCost = 65;
-                    else if (roundedMinutes <= 60) sessionCost = 80;
-                    else sessionCost = 80 * (roundedMinutes / 60);
-                  } else {
-                    if (roundedMinutes <= 15) sessionCost = 35;
-                    else if (roundedMinutes <= 30) sessionCost = 70;
-                    else if (roundedMinutes <= 45) sessionCost = 95;
-                    else if (roundedMinutes <= 60) sessionCost = 120;
-                    else sessionCost = 120 * (roundedMinutes / 60);
-                  }
-                  break;
-                case "Racing":
-                  if (roundedMinutes <= 15) sessionCost = 100;
-                  else if (roundedMinutes <= 30) sessionCost = 150;
-                  else if (roundedMinutes <= 45) sessionCost = 175;
-                  else if (roundedMinutes <= 60) sessionCost = 200;
-                  else sessionCost = 200 * (roundedMinutes / 60);
-                  break;
-                case "VR":
-                  if (roundedMinutes <= 15) sessionCost = 100;
-                  else if (roundedMinutes <= 30) sessionCost = 150;
-                  else if (roundedMinutes <= 45) sessionCost = 175;
-                  else if (roundedMinutes <= 60) sessionCost = 200;
-                  else sessionCost = 200 * (roundedMinutes / 60);
-                  break;
-                case "VR Racing":
-                  if (roundedMinutes <= 15) sessionCost = 150;
-                  else if (roundedMinutes <= 30) sessionCost = 200;
-                  else if (roundedMinutes <= 45) sessionCost = 250;
-                  else if (roundedMinutes <= 60) sessionCost = 300;
-                  else sessionCost = 300 * (roundedMinutes / 60);
-                  break;
-                case "Pool":
-                  if (roundedMinutes <= 15) sessionCost = 50;
-                  else if (roundedMinutes <= 30) sessionCost = 80;
-                  else if (roundedMinutes <= 45) sessionCost = 120;
-                  else if (roundedMinutes <= 60) sessionCost = 160;
-                  else sessionCost = 160 * (roundedMinutes / 60);
-                  break;
-                default:
-                  // Fallback to hourly rate
-                  if (hourlyRate > 0) {
-                    sessionCost = (hourlyRate / 60) * roundedMinutes;
-                  }
-              }
-              console.log(`Active session ${session.id}: calculated cost using fallback = ₹${sessionCost}`);
-            }
-          }
-          
-          correctTotal += sessionCost;
-        });
-        
-        console.log(`Total calculated: ₹${correctTotal}`);
-        
-        // Ensure we never send a zero amount for active sessions
-        if (correctTotal <= 0 && allSessions.some(s => s.status === "ACTIVE")) {
-          console.warn("Calculated total is zero or negative for bill with active sessions");
-          // Fallback to the current amount if available or the bill amount
-          correctTotal = currentAmount !== null 
-            ? currentAmount 
-            : (billData?.correctedAmount || billData?.amount || 0);
-        }
-        
-        // Prepare the mutation parameters
-        const mutationParams = {
+        // Create the mutation parameters
+        const mutationParams: any = {
           billId: activeBillId,
           status: newStatus,
-          correctedAmount: correctTotal,
-          paymentMethod: newStatus === PaymentStatus.PAID ? paymentMethod : undefined,
-          paymentReference: (newStatus === PaymentStatus.PAID && paymentReference) ? paymentReference : undefined,
         };
-        
-        console.log("Calling updateBillStatusMutation with params:", mutationParams);
-        console.log(`Specific correctTotal value: ${correctTotal} - Type: ${typeof correctTotal}`);
-        
-        // Ensure correctedAmount is a number
-        if (typeof correctTotal !== 'number') {
-          console.error("Attempting to convert correctedAmount to number");
-          mutationParams.correctedAmount = Number(correctTotal);
-          console.log(`Converted correctedAmount: ${mutationParams.correctedAmount} - Type: ${typeof mutationParams.correctedAmount}`);
-          // If conversion results in NaN, use a fallback
-          if (isNaN(mutationParams.correctedAmount)) {
-            console.error("Conversion resulted in NaN, using fallback amount");
-            mutationParams.correctedAmount = billData?.amount || 0;
+          
+        // Add payment details for PAID status
+        if (newStatus === PaymentStatus.PAID) {
+          // Validate that amount received has been entered
+          if (!amountReceived || isNaN(parseFloat(amountReceived)) || parseFloat(amountReceived) <= 0) {
+            showToast('Please enter the actual amount received from the customer', 'error');
+            return;
           }
+          
+          // Parse the amount received as a float and ensure it's saved
+          const receivedAmount = parseFloat(amountReceived);
+          console.log("Amount received for payment:", receivedAmount);
+          
+                    mutationParams.paymentMethod = paymentMethod;
+          mutationParams.paymentReference = paymentReference.trim() || undefined;
+          mutationParams.amountReceived = receivedAmount;
         }
+
+        // Add customer ID for DUE status if we have selectedCustomerId
+        if (newStatus === PaymentStatus.DUE && selectedCustomerId) {
+          mutationParams.customerId = selectedCustomerId;
+        }
+
+        // Get the correct amount (either corrected or calculated)
+        let correctTotal = currentAmount;
+        
+        // Type assertion for billData
+        const billData = bill as unknown as Bill;
+        
+        // If amount correction is required and we have a valid number
+        if (correctTotal !== null && typeof correctTotal === 'number' && correctTotal !== billData?.amount) {
+          console.log(`Amount correction: ${billData?.amount} -> ${correctTotal}`);
+          mutationParams.correctedAmount = correctTotal;
+        }
+        
+        // Console for debugging
+        console.log("Calling updateBillStatusMutation with params:", mutationParams);
         
         // IMPORTANT: Pre-emptively invalidate queries to force refresh
         utils.playerManagement.getUnpaidBills.invalidate();
+        utils.playerManagement.getCustomersWithDueBills.invalidate();
         
         // Update the bill status
         updateBillStatusMutation.mutate(mutationParams);
@@ -600,7 +555,31 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
   };
 
   const handleMarkAsDue = () => {
+    // Instead of immediately marking as due, show the customer selection form
+    setShowDueForm(true);
+  };
+
+  const handleSubmitDue = () => {
+    // Validate customer selection
+    if (!selectedCustomerId) {
+      showToast('Please select a customer for the due bill', 'error');
+      return;
+    }
+    
+    // Mark as due if customer is selected
     handleBillStatusChange(PaymentStatus.DUE);
+  };
+
+  const handleCreateCustomer = () => {
+    if (!newCustomerName.trim()) {
+      showToast('Please enter a customer name', 'error');
+      return;
+    }
+
+    createCustomerMutation.mutate({
+      name: newCustomerName,
+      phone: newCustomerPhone || undefined,
+    });
   };
 
   if (!isOpen) return null;
@@ -660,6 +639,144 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
           return total;
         }
       }, 0);
+
+  // Fix the customer selection UI to only appear when marking as DUE
+  const renderCustomerSelection = () => {
+    // Only show customer selection when explicitly triggered by clicking Mark as Due
+    if (!showDueForm) return null;
+    
+    return (
+      <div className="mt-6 border-t pt-4">
+        <h3 className="text-lg font-medium mb-3">Customer Information</h3>
+        
+        {billData?.customer ? (
+          // Show assigned customer if bill is already assigned
+          <div className="bg-blue-50 p-3 rounded-lg mb-4">
+            <div className="flex justify-between">
+              <div>
+                <p className="font-medium">{billData.customer.name}</p>
+                {billData.customer.phone && (
+                  <p className="text-sm text-gray-600">Phone: {billData.customer.phone}</p>
+                )}
+              </div>
+              <button 
+                className="text-blue-600 text-sm hover:underline"
+                onClick={() => setSelectedCustomerId(null)}
+              >
+                Change
+              </button>
+            </div>
+          </div>
+        ) : (
+          // Show customer selection options
+          <div>
+            {showCustomerForm ? (
+              // New Customer Form
+              <div className="bg-blue-50 p-3 rounded-lg mb-4">
+                <h4 className="font-medium mb-2">Add New Customer</h4>
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Name</label>
+                    <input
+                      type="text"
+                      value={newCustomerName}
+                      onChange={(e) => setNewCustomerName(e.target.value)}
+                      className="w-full p-2 border rounded-md"
+                      placeholder="Customer name"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Phone (optional)</label>
+                    <input
+                      type="text"
+                      value={newCustomerPhone}
+                      onChange={(e) => setNewCustomerPhone(e.target.value)}
+                      className="w-full p-2 border rounded-md"
+                      placeholder="Phone number"
+                    />
+                  </div>
+                  <div className="flex space-x-2">
+                    <button
+                      className="px-3 py-1 bg-blue-500 text-white rounded-md hover:bg-blue-600 transition-colors"
+                      onClick={handleCreateCustomer}
+                      disabled={createCustomerMutation.isPending}
+                    >
+                      {createCustomerMutation.isPending ? 'Saving...' : 'Save Customer'}
+                    </button>
+                    <button
+                      className="px-3 py-1 border border-gray-300 rounded-md hover:bg-gray-100 transition-colors"
+                      onClick={() => setShowCustomerForm(false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              // Customer Selection UI
+              <div>
+                <div className="mb-3">
+                  <label className="block text-sm font-medium mb-1">Select Customer <span className="text-red-500">*</span></label>
+                  <select
+                    value={selectedCustomerId || ""}
+                    onChange={(e) => setSelectedCustomerId(e.target.value ? Number(e.target.value) : null)}
+                    className="w-full p-2 border rounded-md"
+                  >
+                    <option value="">-- Select a customer --</option>
+                    
+                    {/* Customers with existing due bills section */}
+                    {customersWithDueBills && customersWithDueBills.length > 0 && (
+                      <optgroup label="Customers with Due Bills">
+                        {customersWithDueBills.map((customer: any) => (
+                          <option key={`due-${customer.id}`} value={customer.id}>
+                            {customer.name} ({customer.bills?.length || 0} due bills)
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    
+                    {/* All customers section */}
+                    {customers && customers.length > 0 && (
+                      <optgroup label="All Customers">
+                        {customers.map((customer: any) => (
+                          <option key={`all-${customer.id}`} value={customer.id}>
+                            {customer.name}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                </div>
+                
+                <button
+                  className="text-blue-600 text-sm hover:underline"
+                  onClick={() => setShowCustomerForm(true)}
+                >
+                  + Add New Customer
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        
+        <div className="flex space-x-3 mt-4">
+          <button
+            className="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors"
+            onClick={handleSubmitDue}
+            disabled={updateBillStatusMutation.isPending}
+          >
+            {updateBillStatusMutation.isPending && updateBillStatusMutation.variables?.status === PaymentStatus.DUE ? 'Processing...' : 'Confirm Due Bill'}
+          </button>
+          <button
+            className="px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-100 transition-colors"
+            onClick={() => setShowDueForm(false)}
+          >
+            Cancel
+          </button>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50 p-4">
@@ -765,8 +882,29 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
                 <div className="border-t pt-4 flex justify-between items-start">
                   <div>
                     <p className="text-xl font-semibold">
-                      Total Amount: {formatCurrency(displayAmount)}
+                      Total Amount: {formatCurrency(displayAmount ?? 0)}
                     </p>
+                    
+                    {/* Amount Received input field - moved to left column under total amount */}
+                    {(displayStatus === PaymentStatus.PENDING || displayStatus === PaymentStatus.DUE) && (
+                      <div className="mt-3 mb-4">
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Amount Received <span className="text-red-500">*</span>
+                        </label>
+                        <div>
+                          <input
+                            type="number"
+                            step="0.01"
+                            min="0"
+                            value={amountReceived}
+                            onChange={(e) => setAmountReceived(e.target.value)}
+                            placeholder={`Enter amount received`}
+                            className="w-44 border border-gray-300 rounded-md px-3 py-2 text-sm"
+                          />
+                        </div>
+                      </div>
+                    )}
+                    
                     <p className="text-sm text-gray-500 mt-1">
                       Bill Status: 
                       <span className={`ml-2 px-2 py-0.5 text-xs rounded-full ${
@@ -783,6 +921,9 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
                     {displayStatus === PaymentStatus.PAID && (
                       <div className="mt-2 text-sm">
                         <p>Paid via: {billData?.paymentMethod || "Cash"}</p>
+                        {billData?.amountReceived !== undefined && (
+                          <p>Amount received: {formatCurrency(billData.amountReceived ?? 0)}</p>
+                        )}
                         {billData?.paymentReference && (
                           <p>Reference: {billData.paymentReference}</p>
                         )}
@@ -794,7 +935,8 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
               </div>
 
                   <div>
-                    {(displayStatus === PaymentStatus.PENDING) && (
+                    {/* Only show payment method fields when about to mark as PAID */}
+                    {(displayStatus === PaymentStatus.PENDING || displayStatus === PaymentStatus.DUE) && (
                       <div className="space-y-3">
                         <div className="space-y-2">
                           <label className="block text-sm font-medium text-gray-700">
@@ -823,9 +965,20 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
                             placeholder="Transaction ID, etc."
                             className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm"
                           />
+                        </div>
+                      </div>
+                    )}
+                  </div>
             </div>
 
+                {/* Display customer selection only when explicitly triggered */}
+                {renderCustomerSelection()}
+
+                {/* Show action buttons for PENDING status */}
+                {displayStatus === PaymentStatus.PENDING && !showDueForm && (
                         <div className="flex space-x-3 mt-4">
+                    {/* Only show "Mark as Due" when amount is not zero */}
+                    {displayAmount > 0 && (
               <button
                             className="px-4 py-2 bg-yellow-500 text-white rounded-lg hover:bg-yellow-600 transition-colors"
                     onClick={handleMarkAsDue}
@@ -833,6 +986,7 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
                   >
                             {updateBillStatusMutation.isPending && updateBillStatusMutation.variables?.status === PaymentStatus.DUE ? 'Processing...' : 'Mark as Due'}
                   </button>
+                    )}
                   <button
                             className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
                     onClick={handleMarkAsPaid}
@@ -841,10 +995,20 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
                             {updateBillStatusMutation.isPending && updateBillStatusMutation.variables?.status === PaymentStatus.PAID ? 'Processing...' : 'Mark as Paid'}
                   </button>
                         </div>
+                )}
+
+                {/* Add Mark as Paid button for DUE status */}
+                {displayStatus === PaymentStatus.DUE && (
+                  <div className="flex justify-end mt-4">
+                    <button
+                      className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+                      onClick={handleMarkAsPaid}
+                      disabled={updateBillStatusMutation.isPending}
+                    >
+                      {updateBillStatusMutation.isPending && updateBillStatusMutation.variables?.status === PaymentStatus.PAID ? 'Processing...' : 'Mark as Paid'}
+                    </button>
                       </div>
               )}
-                  </div>
-                </div>
               </div>
             </div>
           </div>

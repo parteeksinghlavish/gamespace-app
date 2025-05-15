@@ -1,16 +1,26 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { api } from '~/trpc/react';
 import { format } from 'date-fns';
 import { PaymentStatus } from '~/lib/constants';
-import { calculateSessionCost } from '~/lib/pricing';
 import BillModal from './BillModal';
+import { useBillingManager } from '~/lib/hooks/useBillingManager';
 
 export default function UnpaidBillsContent() {
-  const [showBillModal, setShowBillModal] = useState(false);
-  const [selectedBillId, setSelectedBillId] = useState<number | null>(null);
-  const [lastRefreshTime, setLastRefreshTime] = useState<Date>(new Date());
+  // Use our centralized billing manager
+  const {
+    showBillModal,
+    selectedBillId,
+    lastRefreshTime,
+    openBillById,
+    handleBillModalClose,
+    handleBillUpdated,
+    forceRefresh,
+    calculateTotalFromSessions,
+    showToast,
+    formatCurrency
+  } = useBillingManager();
 
   // Query to fetch all unpaid bills
   const {
@@ -34,22 +44,12 @@ export default function UnpaidBillsContent() {
   // Add a custom useEffect to periodically force refetch
   useEffect(() => {
     const refreshTimer = setInterval(() => {
-      // Force a full refresh by updating the timestamp
-      setLastRefreshTime(new Date());
-      refetch();
+      forceRefresh(); // Use the centralized refresh function
       console.log('Forcing refresh of unpaid bills at', new Date().toISOString());
     }, 5000); // Force refresh every 5 seconds
     
     return () => clearInterval(refreshTimer);
-  }, [refetch]);
-
-  // Helper function to format currency
-  const formatCurrency = (amount: number | string | null | undefined): string => {
-    if (amount === null || amount === undefined) return '₹0.00';
-    const num = typeof amount === 'string' ? parseFloat(amount) : amount;
-    if (isNaN(num)) return '₹0.00';
-    return `₹${num.toFixed(2)}`;
-  };
+  }, [forceRefresh]);
 
   // Helper function to format date
   const formatDate = (date: Date | string | null | undefined): string => {
@@ -63,75 +63,15 @@ export default function UnpaidBillsContent() {
     }
   };
 
-  // Show toast notification
-  const showToast = (message: string, type: 'success' | 'error') => {
-    const toast = document.createElement('div');
-    toast.className = `fixed top-4 right-4 p-4 rounded-md text-white ${
-      type === 'success' ? 'bg-green-500' : 'bg-red-500'
-    } shadow-lg z-50`;
-    toast.textContent = message;
-    document.body.appendChild(toast);
-    setTimeout(() => {
-      toast.classList.add('opacity-0', 'transition-opacity', 'duration-500');
-      setTimeout(() => document.body.removeChild(toast), 500);
-    }, 3000);
-  };
-
   // Handler for viewing and paying bill
   const handleViewBill = (billId: number) => {
-    setSelectedBillId(billId);
-    setShowBillModal(true);
-  };
-
-  // Calculate total amount from sessions with improved error handling
-  const calculateTotalFromSessions = (sessions: any[]): number => {
-    if (!sessions || sessions.length === 0) return 0;
-    
-    console.log(`Calculating total for ${sessions.length} sessions in UnpaidBills`);
-    
-    return sessions.reduce((total, session) => {
-      try {
-        // For Frame devices
-        if (session.device?.type === "FRAME") {
-          const frameAmount = 50 * (session.playerCount || 1);
-          console.log(`Frame device ${session.id}: ${session.playerCount} players = ₹${frameAmount}`);
-          return total + frameAmount;
-        }
-        
-        // For completed sessions, use stored cost
-        if (session.status !== "ACTIVE" && session.cost) {
-          const storedCost = Number(session.cost);
-          console.log(`Completed session ${session.id}: stored cost = ₹${storedCost}`);
-          return total + storedCost;
-        }
-        
-        // For active sessions, use the existing calculation function
-        const calculatedCost = calculateSessionCost(session);
-        console.log(`Session ${session.id} (${session.device?.type}): calculated cost = ₹${calculatedCost}`);
-        return total + calculatedCost;
-        
-      } catch (err) {
-        console.error("Error calculating session cost:", err, session);
-        return total;
-      }
-    }, 0);
+    openBillById(billId);
   };
 
   // Add a more prominent refresh button to manually refresh the data
   const handleRefresh = () => {
     showToast('Refreshing unpaid bills...', 'success');
-    // Update timestamp to force a completely fresh fetch
-    setLastRefreshTime(new Date());
-    // Force refetch the unpaid bills
-    refetch();
-  };
-
-  // Handler for when a bill is updated in the modal
-  const handleBillUpdated = () => {
-    console.log('Bill updated, forcing refresh of unpaid bills list');
-    // Force an immediate refetch of the bills
-    setLastRefreshTime(new Date());
-    refetch();
+    forceRefresh();
   };
 
   if (isLoading) {
@@ -273,7 +213,9 @@ export default function UnpaidBillsContent() {
                                   <span className="mx-1">•</span>
                                   <span>{session.duration ? `${session.duration}m` : 'Active'}</span>
                                   <span className="mx-1">•</span>
-                                  <span>{formatCurrency(session.cost || calculateSessionCost(session))}</span>
+                                  <span>
+                                    {formatCurrency(session.cost || 0)}
+                                  </span>
                                 </div>
                               );
                             }).filter(Boolean)}
@@ -324,10 +266,7 @@ export default function UnpaidBillsContent() {
       {showBillModal && selectedBillId && (
         <BillModal
           isOpen={showBillModal}
-          onClose={() => {
-            setShowBillModal(false);
-            setSelectedBillId(null);
-          }}
+          onClose={handleBillModalClose}
           billId={selectedBillId}
           onSuccess={handleBillUpdated}
         />

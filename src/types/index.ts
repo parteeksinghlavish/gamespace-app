@@ -55,6 +55,8 @@ export interface Bill {
   token: Token;
   orderId?: string | null;
   order?: Order | null;
+  customerId?: number | null;
+  customer?: Customer | null;
   amount: number;
   correctedAmount?: number;
   status: PaymentStatus;
@@ -80,4 +82,14 @@ export interface FoodOrder {
   totalAmount: number;
   orderTime: Date | string;
   status: string;
+}
+
+export interface Customer {
+  id: number;
+  name: string;
+  phone?: string;
+  email?: string;
+  bills?: Bill[];
+  createdAt: Date | string;
+  updatedAt: Date | string;
 } 

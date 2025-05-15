@@ -6,7 +6,7 @@ generator client {
 }
 
 datasource db {
-    provider = "sqlite"
+    provider = "postgresql"
     url      = env("DATABASE_URL")
 }
 
@@ -48,12 +48,22 @@ enum OrderStatus {
     CANCELLED
 }
 
+model Customer {
+    id          Int       @id @default(autoincrement())
+    name        String
+    phone       String?
+    email       String?
+    bills       Bill[]
+    createdAt   DateTime  @default(now())
+    updatedAt   DateTime  @updatedAt
+}
+
 model Device {
     id          Int        @id @default(autoincrement())
     type        DeviceType
     counterNo   Int
     maxPlayers  Int
-    hourlyRate  Decimal
+    hourlyRate  Decimal    @db.Decimal(10, 2)
     sessions    Session[]
 
     @@unique([type, counterNo])
@@ -96,7 +106,7 @@ model Session {
     startTime   DateTime      @default(now())
     endTime     DateTime?
     duration    Int?          // Duration in minutes
-    cost        Decimal?      @default(0)
+    cost        Decimal?      @default(0) @db.Decimal(10, 2)
     comments    String?       @default("")
     framesPlayed Int?         // Number of frames played (for FRAME game type)
     status      SessionStatus @default(ACTIVE)
@@ -112,10 +122,14 @@ model Bill {
     // New order relation
     order       Order?        @relation(fields: [orderId], references: [id])
     orderId     String?       // Optional for backward compatibility
-    amount      Decimal
+    // Customer relation for DUE bills
+    customer    Customer?     @relation(fields: [customerId], references: [id])
+    customerId  Int?          // Optional since not all bills will be assigned to customers
+    amount      Decimal       @db.Decimal(10, 2)
     generatedAt DateTime      @default(now())
     status      PaymentStatus @default(PENDING)
-    correctedAmount Decimal?  // Store any manually adjusted amount
+    correctedAmount Decimal?  @db.Decimal(10, 2) // Store any manually adjusted amount
+    amountReceived Decimal?   @db.Decimal(10, 2) // The actual amount received from customer
     paymentMethod String?     // Method of payment (cash, card, etc.)
     paymentReference String?  // Reference number for electronic payments
     paidAt      DateTime?     // When the bill was paid
