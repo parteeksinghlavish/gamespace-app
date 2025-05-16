@@ -1,0 +1,11 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+
+- You are working on a T3 stack (Next.js + TypeScript + Tailwind + tRPC + Prisma + Zod).
+- Follow conventions of this stack.
+- Respect file boundaries, do not suggest combining files unless explicitly told.
+
+- Always prefer type-safe and modular solutions.

@@ -250,10 +250,10 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
     { billId: activeBillId! },
     { 
       enabled: !!activeBillId,
-      refetchOnWindowFocus: true,
+      refetchOnWindowFocus: false, // Disable refetch on window focus
       refetchOnMount: true,
       // Disable automatic refetching when customer selection form is visible
-      refetchInterval: showDueForm ? false : 3000, // Only refresh every 3 seconds when not selecting a customer
+      refetchInterval: false, // Disable automatic refetching
       staleTime: 0, // Consider data always stale to ensure fresh fetches
     }
   );
@@ -300,23 +300,16 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
             const deviceType = session.device?.type as any;
             const playerCount = session.playerCount || 1;
             
-            if (!deviceType) {
-              console.error("Missing device type for session:", session.id);
-              return total;
-            }
-            
+            // Calculate using pricing function
             try {
-              // Calculate using proper pricing function
               const price = calculatePrice(deviceType, playerCount, durationInMinutes);
-              console.log(`${deviceType}: ${durationInMinutes}m, ${playerCount} players = ₹${price}`);
               return total + price;
             } catch (error) {
-              console.error("Error in price calculation:", error);
-              // Fallback calculation using hourly rate
+              console.error("Error calculating price:", error);
+              // Fallback calculation
               const hourlyRate = Number(session.device?.hourlyRate || 0);
               const roundedTime = roundTimeToCharge(durationInMinutes);
               const cost = (hourlyRate / 60) * roundedTime;
-              console.log(`Fallback calculation: ${hourlyRate}/hr, ${roundedTime}m = ₹${cost}`);
               return total + cost;
             }
           } catch (err) {
@@ -325,16 +318,14 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
           }
         }, 0);
         
-        console.log(`Total calculated from sessions: ₹${calculatedTotal}`);
-        
         // Don't allow zero amounts for bills with active sessions
         if (calculatedTotal > 0 || !sessions.some(s => s.status === "ACTIVE")) {
           setCurrentAmount(calculatedTotal);
           
-          // If we have existing amount received, display it
-          if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+          // Only set amount received if it hasn't been set by the user
+          if (billData.amountReceived !== undefined && billData.amountReceived !== null && !amountReceived) {
             setAmountReceived(String(billData.amountReceived));
-          } else if (currentStatus !== PaymentStatus.PAID) {
+          } else if (currentStatus !== PaymentStatus.PAID && !amountReceived) {
             // Initialize amount received field with the calculated total for convenience
             setAmountReceived(String(calculatedTotal));
           }
@@ -346,10 +337,10 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
           console.log(`Using fallback amount: ₹${fallbackAmount}`);
           setCurrentAmount(fallbackAmount);
           
-          // Also update amount received if needed
-          if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+          // Only set amount received if it hasn't been set by the user
+          if (billData.amountReceived !== undefined && billData.amountReceived !== null && !amountReceived) {
             setAmountReceived(String(billData.amountReceived));
-          } else if (currentStatus !== PaymentStatus.PAID) {
+          } else if (currentStatus !== PaymentStatus.PAID && !amountReceived) {
             setAmountReceived(String(fallbackAmount));
           }
         }
@@ -361,15 +352,15 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
         console.log(`No sessions found, using bill amount: ₹${amount}`);
         setCurrentAmount(amount);
         
-        // Also update amount received if needed
-        if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+        // Only set amount received if it hasn't been set by the user
+        if (billData.amountReceived !== undefined && billData.amountReceived !== null && !amountReceived) {
           setAmountReceived(String(billData.amountReceived));
-        } else if (currentStatus !== PaymentStatus.PAID) {
+        } else if (currentStatus !== PaymentStatus.PAID && !amountReceived) {
           setAmountReceived(String(amount));
         }
       }
     }
-  }, [bill, currentStatus]);
+  }, [bill, currentStatus, amountReceived]); // Add amountReceived to dependencies
 
   // Mutation to update bill status
   const updateBillStatusMutation = api.playerManagement.updateBillStatus.useMutation({
@@ -497,7 +488,7 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
         // Add payment details for PAID status
         if (newStatus === PaymentStatus.PAID) {
           // Validate that amount received has been entered
-          if (!amountReceived || isNaN(parseFloat(amountReceived)) || parseFloat(amountReceived) <= 0) {
+          if (!amountReceived || isNaN(parseFloat(amountReceived))) {
             showToast('Please enter the actual amount received from the customer', 'error');
             return;
           }
@@ -506,7 +497,7 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
           const receivedAmount = parseFloat(amountReceived);
           console.log("Amount received for payment:", receivedAmount);
           
-                    mutationParams.paymentMethod = paymentMethod;
+          mutationParams.paymentMethod = paymentMethod;
           mutationParams.paymentReference = paymentReference.trim() || undefined;
           mutationParams.amountReceived = receivedAmount;
         }

@@ -124,6 +124,13 @@ export const playerManagementRouter = createTRPCRouter({
       z.object({
         tokenId: z.number(),
         notes: z.string().optional(),
+        foodItems: z.array(
+          z.object({
+            name: z.string(),
+            price: z.number(),
+            quantity: z.number().min(1)
+          })
+        ).optional(),
       }),
     )
     .mutation(async ({ ctx, input }) => {
@@ -142,13 +149,25 @@ export const playerManagementRouter = createTRPCRouter({
       // Generate a unique order number
       const orderNumber = generateOrderNumber();
 
+      // Process food items if they exist
+      let notes = input.notes || '';
+      if (input.foodItems && input.foodItems.length > 0) {
+        const foodItemsText = input.foodItems
+          .map(item => `${item.quantity}x ${item.name} (₹${item.price})`)
+          .join(', ');
+          
+        notes = notes
+          ? `${notes}, Food items: ${foodItemsText}`
+          : `Food items: ${foodItemsText}`;
+      }
+
       // Create the new order
       const order = await ctx.db.order.create({
         data: {
           id: randomUUID(),
           orderNumber,
           tokenId: input.tokenId,
-          notes: input.notes,
+          notes: notes,
           status: OrderStatus.ACTIVE,
         },
         include: {
@@ -1341,4 +1360,120 @@ export const playerManagementRouter = createTRPCRouter({
       });
       return customers;
   }),
+
+  // Add food items to an existing order
+  addFoodToOrder: protectedProcedure
+    .input(
+      z.object({
+        orderId: z.string(),
+        foodItems: z.array(
+          z.object({
+            name: z.string(),
+            price: z.number(),
+            quantity: z.number().min(1)
+          })
+        )
+      }),
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Check if order exists
+      const order = await ctx.db.order.findUnique({
+        where: { id: input.orderId },
+      });
+
+      if (!order) {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "Order not found",
+        });
+      }
+
+      // Extract existing food items if any
+      const existingNotes = order.notes || '';
+      let existingFoodItems: Array<{name: string, price: number, quantity: number}> = [];
+      
+      if (existingNotes.includes('Food items:')) {
+        const match = existingNotes.match(/Food items:(.*?)(?:,|$)/);
+        if (match && match[1]) {
+          // Parse existing items
+          const itemsStr = match[1].trim();
+          existingFoodItems = itemsStr.split('|')
+            .map(item => {
+              const itemMatch = item.trim().match(/^(\d+)x (.+?) \(₹(\d+(?:\.\d+)?)\)$/);
+              if (itemMatch) {
+                return {
+                  quantity: parseInt(itemMatch[1]),
+                  name: itemMatch[2].trim(),
+                  price: parseFloat(itemMatch[3])
+                };
+              }
+              return null;
+            })
+            .filter(Boolean) as Array<{name: string, price: number, quantity: number}>;
+        }
+      }
+      
+      // Helper function to normalize item names for comparison
+      const normalizeItemName = (name: string) => {
+        // Remove any variant info after the dash
+        const baseName = name.split('-')[0];
+        // Clean up and standardize
+        return baseName.toLowerCase().trim();
+      };
+      
+      // Combine new items with existing items (adding quantities for same items)
+      const combinedItems = [...existingFoodItems];
+      
+      input.foodItems.forEach(newItem => {
+        // Try to find matching item by normalized name and price
+        const newItemNormalized = normalizeItemName(newItem.name);
+        
+        const existingItemIndex = combinedItems.findIndex(item => 
+          normalizeItemName(item.name) === newItemNormalized && 
+          Math.abs(item.price - newItem.price) < 0.01 // Compare prices with small tolerance
+        );
+        
+        if (existingItemIndex >= 0) {
+          // Increment quantity of existing item
+          combinedItems[existingItemIndex].quantity += newItem.quantity;
+        } else {
+          // Add as new item
+          combinedItems.push({
+            name: newItem.name,
+            price: newItem.price,
+            quantity: newItem.quantity
+          });
+        }
+      });
+      
+      // Convert back to string format
+      const combinedItemsText = combinedItems
+        .map(item => `${item.quantity}x ${item.name} (₹${item.price})`)
+        .join('|');
+      
+      // Update notes with combined items
+      let newNotes;
+      if (existingNotes.includes('Food items:')) {
+        // Replace existing food items section
+        newNotes = existingNotes.replace(
+          /Food items:(.*?)(?:,|$)/, 
+          `Food items: ${combinedItemsText},`
+        );
+      } else {
+        // Add new food items section
+        newNotes = existingNotes
+          ? `${existingNotes}, Food items: ${combinedItemsText}`
+          : `Food items: ${combinedItemsText}`;
+      }
+      
+      // Update the order
+      const updatedOrder = await ctx.db.order.update({
+        where: { id: input.orderId },
+        data: {
+          notes: newNotes,
+        },
+      });
+
+      return updatedOrder;
+    }),
 }); 

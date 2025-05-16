@@ -11,6 +11,8 @@ import CommentEditModal from './CommentEditModal';
 import BillModal from './BillModal';
 import UnpaidBillsContent from './UnpaidBillsContent';
 import { useBillingManager } from '~/lib/hooks/useBillingManager';
+// @ts-ignore
+import NewFoodOrderModal from './NewFoodOrderModal';
 
 // Helper functions
 function formatTime(date: Date | string): string {
@@ -32,6 +34,43 @@ function calculateDuration(startTime: Date | string): string {
 function formatCurrency(amount: number | string): string {
   const num = typeof amount === 'string' ? parseFloat(amount) : amount;
   return `₹${num.toFixed(2)}`;
+}
+
+// Replace old extractFoodItems
+function extractFoodItems(notes: string): { foodItems: Array<{ displayName: string; quantity: number; price: number; total: number }>; otherNotes: string } {
+  let otherNotes = notes;
+  const map = new Map<string, { displayName: string; quantity: number; price: number; total: number }>();
+  
+  // Capture the block after 'Food items:'
+  const blockMatch = notes.match(/Food items:\s*([\s\S]*)$/);
+  if (blockMatch && blockMatch[1]) {
+    const block = blockMatch[1];
+    // Match patterns like '2x Red Sauce Pasta - Regular (₹199)'
+    // Regex groups: 1: quantity, 2: name, 3: price
+    const pattern = /(\d+)x\s+(.+?)\s*\(₹(\d+(?:\.\d+)?)\)/g;
+    let m: RegExpExecArray | null;
+    while ((m = pattern.exec(block)) !== null) {
+      const qty = parseInt(m[1]!, 10);
+      const name = m[2]!.trim(); // This is the clean item name, e.g., "Red Sauce Pasta - Regular"
+      const price = parseFloat(m[3]!);
+      
+      // Use the full name (including variant, if any) and price for the key to ensure accurate grouping
+      const key = `${name.toLowerCase().trim()}_${price.toFixed(2)}`;
+      
+      if (map.has(key)) {
+        const entry = map.get(key)!;
+        entry.quantity += qty;
+        entry.total = entry.quantity * entry.price;
+        // entry.displayName is already the clean 'name' from when it was first added
+      } else {
+        // Ensure displayName is set to the clean 'name'
+        map.set(key, { displayName: name, quantity: qty, price, total: qty * price });
+      }
+    }
+    // Remove the food items block from notes after processing
+    otherNotes = notes.replace(/Food items:\s*[\s\S]*$/, '').trim();
+  }
+  return { foodItems: Array.from(map.values()), otherNotes };
 }
 
 // Calculate cost for active sessions
@@ -65,6 +104,7 @@ export default function PlayerManagementContent() {
   const [showNewSessionModal, setShowNewSessionModal] = useState(false);
   const [showCommentModal, setShowCommentModal] = useState(false);
   const [showBillModal, setShowBillModal] = useState(false);
+  const [showFoodOrderModal, setShowFoodOrderModal] = useState(false);
   const [selectedSession, setSelectedSession] = useState<any>(null);
   const [editingPlayerCount, setEditingPlayerCount] = useState<number | null>(null);
   const [newPlayerCount, setNewPlayerCount] = useState<number>(1);
@@ -92,6 +132,33 @@ export default function PlayerManagementContent() {
 
   // Mutations
   const utils = api.useUtils();
+
+  // Define food order mutation at the top level
+  const createFoodOrderMutation = api.playerManagement.createOrder.useMutation({
+    onSuccess: (newOrder) => {
+      showToast(`Food order placed successfully!`, 'success');
+      setShowFoodOrderModal(false);
+      setLocalOrderId(null);
+      // Refetch data to update UI
+      refetch();
+    },
+    onError: (error) => {
+      showToast(`Error creating food order: ${error.message}`, 'error');
+    }
+  });
+
+  // Add a new mutation for adding food items to an existing order
+  const addFoodToOrderMutation = api.playerManagement.addFoodToOrder.useMutation({
+    onSuccess: () => {
+      showToast("Food items added to order successfully!", 'success');
+      setShowFoodOrderModal(false);
+      setLocalOrderId(null);
+      refetch();
+    },
+    onError: (error) => {
+      showToast(`Error adding food items: ${error.message}`, 'error');
+    }
+  });
 
   const endSessionMutation = api.playerManagement.endSession.useMutation({
     onSuccess: () => {
@@ -203,6 +270,18 @@ export default function PlayerManagementContent() {
     setEditingPlayerCount(null);
   };
 
+  // Handle button click to create new food order
+  const handleCreateNewFoodOrder = () => {
+    setLocalOrderId(null);
+    setShowFoodOrderModal(true);
+  };
+
+  // Handle adding food to an existing order
+  const handleAddFoodToOrder = (orderId: string) => {
+    setLocalOrderId(orderId);
+    setShowFoodOrderModal(true);
+  };
+
   // Filter tokens to show only those with active sessions or no completed bills
   const activeOrPendingTokens = tokens?.filter((token: any) => {
     // Check if token has any active sessions
@@ -294,7 +373,7 @@ export default function PlayerManagementContent() {
                       <div key={order.id} className="border border-gray-100 rounded-lg overflow-hidden">
                         <div className="bg-gray-50 px-4 py-2 flex justify-between items-center">
                           <div className="flex items-center space-x-4">
-                            {/* Token number display - keep the circle but remove text label */}
+                            {/* Order display with token number */}
                             <div className="flex items-center">
                               <div className="bg-blue-100 text-blue-600 font-semibold rounded-full h-10 w-10 flex items-center justify-center">
                                 {token.tokenNo}
@@ -328,6 +407,18 @@ export default function PlayerManagementContent() {
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                                 </svg>
                                 Add Session
+                              </button>
+                            )}
+                            
+                            {order.status === 'ACTIVE' && (
+                              <button
+                                className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-2 rounded font-medium flex items-center ml-2"
+                                onClick={() => handleAddFoodToOrder(order.id)}
+                              >
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                Add Food
                               </button>
                             )}
                             
@@ -380,7 +471,7 @@ export default function PlayerManagementContent() {
                                               min="1"
                                               max={session.device.maxPlayers}
                                               value={newPlayerCount}
-                                              onChange={(e) => setNewPlayerCount(parseInt(e.target.value))}
+                                              onChange={(e) => setNewPlayerCount(parseInt((e.target as HTMLInputElement).value))}
                                               className="w-12 p-1 border rounded"
                                             />
                                             <button
@@ -478,6 +569,77 @@ export default function PlayerManagementContent() {
                             No sessions in this order
                           </div>
                         )}
+                        
+                        {/* Display Food Items in a table format */}
+                        {(() => {
+                          if (!order.notes) return null;
+                          const { foodItems, otherNotes } = extractFoodItems(order.notes);
+                          console.log('Parsed foodItems (from extractFoodItems):', JSON.stringify(foodItems)); // Enhanced logging
+                          if (foodItems.length === 0) return null;
+                          
+                          // Combine duplicates by displayName AND price for robust aggregation
+                          const grouped = new Map<string, { displayName: string; quantity: number; price: number; total: number }>();
+                          foodItems.forEach(item => {
+                            // Use a key that includes both displayName (case-insensitive) and price (fixed to 2 decimal places)
+                            const key = `${item.displayName.toLowerCase()}_${item.price.toFixed(2)}`;
+                            if (grouped.has(key)) {
+                              const e = grouped.get(key)!;
+                              e.quantity += item.quantity;
+                              // Total is based on the consistent price for this key
+                              e.total = e.quantity * e.price; 
+                            } else {
+                              // Spread item to ensure all properties are copied correctly
+                              grouped.set(key, { ...item });
+                            }
+                          });
+                          const displayItems = Array.from(grouped.values());
+                          console.log('Displayable foodItems (after render-time grouping):', JSON.stringify(displayItems)); // Enhanced logging
+
+                          return (
+                            <div className="overflow-x-auto">
+                              <table className="min-w-full divide-y divide-gray-200">
+                                <thead>
+                                  <tr>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Device</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Item</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Price</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Quantity</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Total</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Comments</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Status</th>
+                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Actions</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="bg-white divide-y divide-gray-200">
+                                  {displayItems.map((item, idx) => (
+                                    <tr key={`food-${idx}`} className="hover:bg-gray-50 transition-colors">
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm">
+                                        <span className="font-medium text-gray-800">Food</span>
+                                      </td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                                        {item.displayName}
+                                      </td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                                        ₹{item.price.toFixed(2)}
+                                      </td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                                        {item.quantity}pc
+                                      </td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                                        ₹{item.total.toFixed(2)}
+                                      </td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">-</td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">ACTIVE</span>
+                                      </td>
+                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">-</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          );
+                        })()}
                       </div>
                     ))}
                   </div>
@@ -527,7 +689,6 @@ export default function PlayerManagementContent() {
                               <span className="font-medium text-gray-800">{session.device.type} {session.device.counterNo}</span>
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                              {/* Player count handling - same as before */}
                               {session.playerCount}
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{formatTime(session.startTime)}</td>
@@ -647,6 +808,15 @@ export default function PlayerManagementContent() {
             </svg>
             <span>NEW SESSION</span>
           </button>
+          <button
+            className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors flex items-center shadow-sm"
+            onClick={handleCreateNewFoodOrder}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span>ADD FOOD</span>
+          </button>
         </div>
       </div>
 
@@ -717,6 +887,69 @@ export default function PlayerManagementContent() {
           onClose={handleBillModalClose}
           billId={selectedBillId || undefined}
           onSuccess={handleBillUpdated}
+        />
+      )}
+
+      {showFoodOrderModal && (
+        <NewFoodOrderModal 
+          isOpen={showFoodOrderModal}
+          onClose={() => {
+            setShowFoodOrderModal(false);
+            setLocalOrderId(null);
+          }}
+          onSubmit={(order) => {
+            // Find the actual token object from the token number
+            const tokenObject = tokens?.find(token => token.tokenNo === order.tokenNo);
+            
+            if (!tokenObject) {
+              showToast(`Error: Token #${order.tokenNo} not found in the system`, 'error');
+              return;
+            }
+            
+            // Format food items with quantities for better display
+            const formattedItems = order.items.map((item: any) => ({
+              name: `${item.quantity}x ${item.name}${item.price ? ` (₹${item.price})` : ''}`,
+              price: item.price,
+              quantity: item.quantity
+            }));
+            
+            // Check if we should add to an existing order or create a new one
+            if (localOrderId) {
+              // We have an explicitly selected order ID, so add the food items to this order
+              addFoodToOrderMutation.mutate({
+                orderId: localOrderId,
+                foodItems: formattedItems
+              });
+            } else {
+              // Check if the selected token already has any active orders
+              const activeOrders = tokenObject.orders?.filter(
+                (order: any) => order.status === 'ACTIVE'
+              );
+              
+              if (activeOrders && activeOrders.length > 0) {
+                // Use the most recent active order (assuming first is most recent if sorted, or just pick one)
+                const mostRecentOrder = activeOrders[0];
+                if (mostRecentOrder) {
+                  addFoodToOrderMutation.mutate({
+                    orderId: mostRecentOrder.id,
+                    foodItems: formattedItems
+                  });
+                  showToast(`Adding food to existing order ${mostRecentOrder.orderNumber}`, 'success');
+                } else {
+                  // This case should ideally not be reached if activeOrders.length > 0
+                  showToast(`Error: Could not determine active order to add food to.`, 'error');
+                }
+              } else {
+                // No active orders for this token, create a new one
+                createFoodOrderMutation.mutate({
+                  tokenId: tokenObject.id,
+                  foodItems: formattedItems
+                });
+              }
+            }
+          }}
+          activeTokens={tokens?.map(token => token.tokenNo) || []}
+          existingOrderId={localOrderId || undefined}
         />
       )}
     </div>

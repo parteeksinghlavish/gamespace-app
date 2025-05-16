@@ -4,7 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { api } from '~/trpc/react';
 import { FoodOrderStatus } from '~/lib/constants';
 import NewFoodOrderModal from './NewFoodOrderModal';
-import type { Token, FoodItem } from '~/types';
+import type { Token, FoodOrder, FoodItem } from '~/types';
 
 // Helper functions
 function formatTime(date: Date | string): string {
@@ -22,73 +22,7 @@ function formatCurrency(amount: number | string): string {
 }
 
 // Sample food order data (will be replaced with API data later)
-const sampleFoodOrders = [
-  {
-    id: 1,
-    tokenId: 1,
-    tokenNo: 1,
-    items: [
-      {
-        id: 101,
-        name: 'Coffee - Cappuccino',
-        price: 70,
-        quantity: 2,
-        total: 140,
-      },
-      {
-        id: 102,
-        name: 'Sandwich - Cheese',
-        price: 80,
-        quantity: 1,
-        total: 80,
-      }
-    ],
-    totalAmount: 220,
-    orderTime: new Date(new Date().getTime() - 30 * 60000), // 30 minutes ago
-    status: FoodOrderStatus.DELIVERED,
-  },
-  {
-    id: 2,
-    tokenId: 2,
-    tokenNo: 2,
-    items: [
-      {
-        id: 103,
-        name: 'Pizza - Margherita',
-        price: 250,
-        quantity: 1,
-        total: 250,
-      },
-      {
-        id: 104,
-        name: 'Cola',
-        price: 40,
-        quantity: 2,
-        total: 80,
-      }
-    ],
-    totalAmount: 330,
-    orderTime: new Date(new Date().getTime() - 15 * 60000), // 15 minutes ago
-    status: FoodOrderStatus.PREPARING,
-  },
-  {
-    id: 3,
-    tokenId: 3,
-    tokenNo: 3,
-    items: [
-      {
-        id: 105,
-        name: 'French Fries - Cheese Loaded',
-        price: 120,
-        quantity: 1,
-        total: 120,
-      }
-    ],
-    totalAmount: 120,
-    orderTime: new Date(new Date().getTime() - 5 * 60000), // 5 minutes ago
-    status: FoodOrderStatus.ORDERED,
-  }
-];
+const sampleFoodOrders: FoodOrder[] = []; // Empty array instead of sample data
 
 export default function FoodOrdersContent() {
   const [showNewOrderModal, setShowNewOrderModal] = useState(false);
@@ -146,27 +80,32 @@ export default function FoodOrdersContent() {
   };
   
   // Handler for generating bill for a token
-  const handleGenerateBill = (tokenId: number) => {
+  const handleGenerateBill = (tokenId: number | string) => {
+    // Convert tokenId to a number if it's a string
+    const numericTokenId = typeof tokenId === 'string' ? parseInt(tokenId) : tokenId;
     // This should be similar to the player management bill generation
     // but should include both game and food items
-    showToast(`Generating bill for token ${tokenId}`, 'success');
+    showToast(`Generating bill for token ${numericTokenId}`, 'success');
   };
   
   // Handler for updating food order status
-  const handleUpdateStatus = (orderId: number, status: FoodOrderStatus) => {
+  const handleUpdateStatus = (orderId: number | string, status: FoodOrderStatus) => {
+    // Convert orderId to a number if it's a string
+    const numericOrderId = typeof orderId === 'string' ? parseInt(orderId) : orderId;
     // Will be replaced with real API call
-    showToast(`Updated order ${orderId} status to ${status}`, 'success');
+    showToast(`Updated order ${numericOrderId} status to ${status}`, 'success');
   };
 
   // Filter orders that are not paid
   const activeOrders = sampleFoodOrders.filter(order => order.status !== FoodOrderStatus.PAID);
   
   // Group orders by token
-  const ordersByToken = activeOrders.reduce((acc, order) => {
-    acc[order.tokenNo] ??= [];
-    acc[order.tokenNo]!.push(order);
+  const ordersByToken = activeOrders.reduce<Record<string, FoodOrder[]>>((acc, order) => {
+    const tokenNoKey = String(order.tokenNo);
+    acc[tokenNoKey] ??= [];
+    acc[tokenNoKey]!.push(order);
     return acc;
-  }, {} as Record<number, typeof activeOrders>);
+  }, {});
 
   if (isTokensLoading) {
     return (
@@ -237,21 +176,20 @@ export default function FoodOrdersContent() {
           </div>
         ) : (
           <div className="p-6 space-y-6">
-            {Object.entries(ordersByToken).map(([tokenNo, orders]) => (
-              <div key={tokenNo} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-                <div className="flex justify-between items-center px-6 py-4 border-b border-gray-200">
+            {Object.entries(ordersByToken).map(([tokenNoKey, orders]) => (
+              <div key={tokenNoKey} className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                <div className="border-b border-gray-200 px-6 py-4 flex items-center justify-between">
                   <div className="flex items-center">
-                    <div className="bg-blue-100 text-blue-600 font-semibold rounded-full h-10 w-10 flex items-center justify-center mr-3">
-                      {tokenNo}
-                    </div>
-                    <div>
-                      <span className="text-xs text-gray-500">Token Number</span>
-                      <h2 className="text-lg font-semibold text-gray-800">#{tokenNo}</h2>
-                    </div>
+                    <span className="h-8 w-8 flex items-center justify-center bg-blue-100 text-blue-700 rounded-full mr-3 font-medium">
+                      {tokenNoKey}
+                    </span>
+                    <h3 className="text-lg font-semibold text-gray-800">
+                      Token #{tokenNoKey}
+                    </h3>
                   </div>
                   <button
                     className="bg-gradient-to-r from-orange-500 to-orange-600 hover:from-orange-600 hover:to-orange-700 text-white px-4 py-2.5 rounded-lg flex items-center transition-colors shadow-sm"
-                    onClick={() => handleGenerateBill(parseInt(tokenNo))}
+                    onClick={() => handleGenerateBill(tokenNoKey)}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z" />
