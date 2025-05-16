@@ -16,9 +16,9 @@
     "checkJs": true,
 
     /* Bundled projects */
-    "lib": ["es2017", "esnext.asynciterable"],
+    "lib": ["dom", "dom.iterable", "es2017", "esnext.asynciterable"],
     "noEmit": true,
-    "module": "commonjs",
+    "module": "esnext",
     "moduleResolution": "node",
     "jsx": "preserve",
     "plugins": [{ "name": "next" }],
