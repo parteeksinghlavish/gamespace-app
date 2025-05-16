@@ -46,25 +46,33 @@ function extractFoodItems(notes: string): { foodItems: Array<{ displayName: stri
   if (blockMatch && blockMatch[1]) {
     const block = blockMatch[1];
     // Match patterns like '2x Red Sauce Pasta - Regular (₹199)'
-    // Regex groups: 1: quantity, 2: name, 3: price
+    // Regex groups: 1: quantity, 2: name part, 3: price
     const pattern = /(\d+)x\s+(.+?)\s*\(₹(\d+(?:\.\d+)?)\)/g;
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(block)) !== null) {
-      const qty = parseInt(m[1]!, 10);
-      const name = m[2]!.trim(); // This is the clean item name, e.g., "Red Sauce Pasta - Regular"
+      const qty = parseInt(m[1]!, 10); // This is the quantity for the current item entry in notes
+      const namePartFromRegex = m[2]!.trim(); // This might be "Actual Name" or "Nx Actual Name" if notes are malformed
       const price = parseFloat(m[3]!);
       
-      // Use the full name (including variant, if any) and price for the key to ensure accurate grouping
-      const key = `${name.toLowerCase().trim()}_${price.toFixed(2)}`;
+      let actualBaseName = namePartFromRegex;
+      // Check if namePartFromRegex itself has a "Nx " prefix (due to malformed notes from backend)
+      // Example: namePartFromRegex could be "1x Pasta - Regular"
+      const innerPrefixMatch = namePartFromRegex.match(/^(\d+)x\s+(.+)/);
+      if (innerPrefixMatch && innerPrefixMatch[2]) {
+        // If it was "1x Pasta - Regular", innerPrefixMatch[2] is "Pasta - Regular"
+        actualBaseName = innerPrefixMatch[2].trim();
+      }
+      // Now actualBaseName is the clean item name, e.g., "Pasta - Regular"
+
+      const key = `${actualBaseName.toLowerCase()}_${price.toFixed(2)}`;
       
       if (map.has(key)) {
         const entry = map.get(key)!;
-        entry.quantity += qty;
+        entry.quantity += qty; // Add the quantity from the current item string in notes
         entry.total = entry.quantity * entry.price;
-        // entry.displayName is already the clean 'name' from when it was first added
       } else {
-        // Ensure displayName is set to the clean 'name'
-        map.set(key, { displayName: name, quantity: qty, price, total: qty * price });
+        // Use actualBaseName for displayName and qty from the current item string
+        map.set(key, { displayName: actualBaseName, quantity: qty, price, total: qty * price });
       }
     }
     // Remove the food items block from notes after processing
@@ -574,26 +582,13 @@ export default function PlayerManagementContent() {
                         {(() => {
                           if (!order.notes) return null;
                           const { foodItems, otherNotes } = extractFoodItems(order.notes);
-                          console.log('Parsed foodItems (from extractFoodItems):', JSON.stringify(foodItems)); // Enhanced logging
+                          console.log('Parsed foodItems (from extractFoodItems):', JSON.stringify(foodItems)); 
                           if (foodItems.length === 0) return null;
                           
-                          // Combine duplicates by displayName AND price for robust aggregation
-                          const grouped = new Map<string, { displayName: string; quantity: number; price: number; total: number }>();
-                          foodItems.forEach(item => {
-                            // Use a key that includes both displayName (case-insensitive) and price (fixed to 2 decimal places)
-                            const key = `${item.displayName.toLowerCase()}_${item.price.toFixed(2)}`;
-                            if (grouped.has(key)) {
-                              const e = grouped.get(key)!;
-                              e.quantity += item.quantity;
-                              // Total is based on the consistent price for this key
-                              e.total = e.quantity * e.price; 
-                            } else {
-                              // Spread item to ensure all properties are copied correctly
-                              grouped.set(key, { ...item });
-                            }
-                          });
-                          const displayItems = Array.from(grouped.values());
-                          console.log('Displayable foodItems (after render-time grouping):', JSON.stringify(displayItems)); // Enhanced logging
+                          // foodItems from extractFoodItems are now correctly grouped and named.
+                          // The previous render-time grouping logic is no longer needed.
+                          const displayItems = foodItems;
+                          // console.log('Displayable foodItems (after primary parsing):', JSON.stringify(displayItems)); // Optional: keep for debugging
 
                           return (
                             <div className="overflow-x-auto">
