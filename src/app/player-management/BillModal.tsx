@@ -7,6 +7,74 @@ import { roundTimeToCharge, calculatePrice, calculateSessionCost, calculateTotal
 import { formatCurrency, formatDate } from "~/lib/utils";
 import { format } from "date-fns";
 
+// Parse food items from order notes
+interface FoodItem {
+  name: string;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
+function parseFoodItemsFromNotes(notes: string | null | undefined): FoodItem[] {
+  if (!notes) {
+    return [];
+  }
+
+  const foodItemsSectionRegex = /Food items:(.*?)(?:,|$|\n)/;
+  const foodItemsSectionMatch = notes.match(foodItemsSectionRegex);
+  
+  if (!foodItemsSectionMatch || typeof foodItemsSectionMatch[1] === 'undefined') {
+    return [];
+  }
+
+  const itemsString = foodItemsSectionMatch[1].trim();
+  if (!itemsString) {
+    return [];
+  }
+
+  const itemsArray = itemsString.split('|');
+  const itemsMap = new Map<string, FoodItem>();
+
+  const itemRegex = /(\d+)x\s*(.*?)\s*\(₹(\d+\.?\d*)\)/;
+  for (const itemStr of itemsArray) {
+    const match = itemStr.match(itemRegex);
+    if (match && match[1] && match[2] && match[3]) {
+      const quantity = parseInt(match[1], 10);
+      let name = match[2].trim();
+      const price = parseFloat(match[3]);
+
+      const innerPrefixMatch = name.match(/^(\d+)x\s+(.+)/);
+      if (innerPrefixMatch && innerPrefixMatch[1] && innerPrefixMatch[2]) {
+        name = innerPrefixMatch[2].trim();
+      }
+
+      if (!isNaN(quantity) && !isNaN(price)) {
+        const key = `${name}-${price}`;
+        
+        if (itemsMap.has(key)) {
+          const existingItem = itemsMap.get(key)!;
+          existingItem.quantity += quantity;
+          existingItem.total = existingItem.quantity * existingItem.price;
+        } else {
+          itemsMap.set(key, {
+            name,
+            quantity,
+            price,
+            total: quantity * price,
+          });
+        }
+      } else {
+        console.warn("[parseFoodItemsFromNotes] Parsed quantity or price is NaN", { quantity, price, itemStr });
+      }
+    } else {
+      console.warn("[parseFoodItemsFromNotes] Regex did not match for itemStr:", itemStr);
+    }
+  }
+  
+  const result = Array.from(itemsMap.values()).sort((a, b) => a.name.localeCompare(b.name));
+  return result;
+}
+
 // This Bill type needs to be defined locally since we removed the import
 interface Bill {
   id: number;
@@ -30,6 +98,7 @@ interface Bill {
     orderNumber: string;
     status: string;
     sessions: Session[];
+    notes?: string;
   };
   customerId?: number;
   customer?: {
@@ -75,6 +144,7 @@ interface Order {
   orderNumber: string;
   status: string;
   sessions: Session[];
+  notes?: string;
 }
 
 interface Token {
@@ -261,106 +331,65 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
   // Update local state when bill data changes
   useEffect(() => {
     if (bill) {
-      // Use type assertion to handle the bill structure
       const billData = bill as unknown as Bill;
-      
-      console.log("Bill data received:", billData);
-      
-      // Always update local status from server
       setCurrentStatus(billData.status);
-      
-      // Calculate total from sessions for more accurate amounts
-      if (billData.order?.sessions || billData.token?.sessions) {
-        const sessions = billData.order?.sessions || billData.token?.sessions || [];
-        
-        console.log(`Calculating total for ${sessions.length} sessions`);
-        
-        const calculatedTotal = sessions.reduce((total, session) => {
-          try {
-            // For Frame devices
-            if (session.device?.type === "FRAME") {
-              const frameAmount = 50 * (session.playerCount || 1);
-              console.log(`Frame device: ${session.playerCount} players = ₹${frameAmount}`);
-              return total + frameAmount;
-            }
-            
-            // For completed sessions, use stored cost
-            if (session.status !== "ACTIVE" && session.cost) {
-              const storedCost = Number(session.cost);
-              console.log(`Stored cost for session ${session.id}: ₹${storedCost}`);
-              return total + storedCost;
-            }
-            
-            // For active sessions, calculate duration and cost
-            const durationInMinutes = session.status === "ACTIVE"
-              ? Math.ceil((new Date().getTime() - new Date(session.startTime).getTime()) / (1000 * 60))
-              : (session.duration || 0);
-            
-            // Get device type and player count
-            const deviceType = session.device?.type as any;
-            const playerCount = session.playerCount || 1;
-            
-            // Calculate using pricing function
-            try {
-              const price = calculatePrice(deviceType, playerCount, durationInMinutes);
-              return total + price;
-            } catch (error) {
-              console.error("Error calculating price:", error);
-              // Fallback calculation
-              const hourlyRate = Number(session.device?.hourlyRate || 0);
-              const roundedTime = roundTimeToCharge(durationInMinutes);
-              const cost = (hourlyRate / 60) * roundedTime;
-              return total + cost;
-            }
-          } catch (err) {
-            console.error("Error calculating session cost:", err);
-            return total;
+
+      let finalAmountToDisplay = 0;
+
+      // Prioritize correctedAmount if it's a valid number string/number
+      if (billData.correctedAmount !== undefined && billData.correctedAmount !== null) {
+          const parsedCorrected = parseFloat(String(billData.correctedAmount));
+          if (!isNaN(parsedCorrected)) {
+              finalAmountToDisplay = parsedCorrected;
           }
-        }, 0);
-        
-        // Don't allow zero amounts for bills with active sessions
-        if (calculatedTotal > 0 || !sessions.some(s => s.status === "ACTIVE")) {
-          setCurrentAmount(calculatedTotal);
-          
-          // Only set amount received if it hasn't been set by the user
-          if (billData.amountReceived !== undefined && billData.amountReceived !== null && !amountReceived) {
-            setAmountReceived(String(billData.amountReceived));
-          } else if (currentStatus !== PaymentStatus.PAID && !amountReceived) {
-            // Initialize amount received field with the calculated total for convenience
-            setAmountReceived(String(calculatedTotal));
+      } 
+      // If correctedAmount wasn't valid or present, use original amount
+      else if (billData.amount !== undefined && billData.amount !== null) {
+          const parsedAmount = parseFloat(String(billData.amount));
+          if (!isNaN(parsedAmount)) {
+              finalAmountToDisplay = parsedAmount;
           }
-        } else {
-          // Use corrected amount or original amount as fallback
-          const fallbackAmount = billData.correctedAmount !== undefined 
-            ? billData.correctedAmount
-            : billData.amount;
-          console.log(`Using fallback amount: ₹${fallbackAmount}`);
-          setCurrentAmount(fallbackAmount);
-          
-          // Only set amount received if it hasn't been set by the user
-          if (billData.amountReceived !== undefined && billData.amountReceived !== null && !amountReceived) {
-            setAmountReceived(String(billData.amountReceived));
-          } else if (currentStatus !== PaymentStatus.PAID && !amountReceived) {
-            setAmountReceived(String(fallbackAmount));
-          }
-        }
-      } else {
-        // Fallback to bill amount if sessions not available
-        const amount = billData.correctedAmount !== undefined 
-          ? billData.correctedAmount
-          : billData.amount;
-        console.log(`No sessions found, using bill amount: ₹${amount}`);
-        setCurrentAmount(amount);
-        
-        // Only set amount received if it hasn't been set by the user
-        if (billData.amountReceived !== undefined && billData.amountReceived !== null && !amountReceived) {
-          setAmountReceived(String(billData.amountReceived));
-        } else if (currentStatus !== PaymentStatus.PAID && !amountReceived) {
-          setAmountReceived(String(amount));
-        }
       }
+      setCurrentAmount(finalAmountToDisplay);
+
+      if (billData.order?.notes) {
+        const foodItems = parseFoodItemsFromNotes(billData.order.notes);
+        const foodTotal = foodItems.reduce((total, item) => total + item.total, 0);
+        // Simplified log for food items
+        // console.log("[BillModal] Food items parsed for bill:", foodItems, "Calculated Food Total:", foodTotal);
+      }
+    } else {
+        // Reset states if bill is null (e.g., modal closed or error)
+        setCurrentStatus(null);
+        setCurrentAmount(null);
     }
-  }, [bill, currentStatus, amountReceived]); // Add amountReceived to dependencies
+  }, [bill]); // Only depends on bill
+
+  // useEffect to initialize or update amountReceived based on bill data or currentAmount
+  useEffect(() => {
+    if (bill) {
+        const billData = bill as unknown as Bill;
+        let initialAmountReceivedString = ""; // Default to empty string
+
+        // If amountReceived is already set in the bill data, use that
+        if (billData.amountReceived !== undefined && billData.amountReceived !== null) {
+            const serverAmountRec = parseFloat(String(billData.amountReceived));
+            if (!isNaN(serverAmountRec)) {
+                initialAmountReceivedString = String(serverAmountRec);
+            }
+        } 
+        // Else if the bill is not PAID, prefill with the current bill total (from currentAmount state)
+        else if (billData.status !== PaymentStatus.PAID) {
+            if (currentAmount !== null && currentAmount > 0) {
+                initialAmountReceivedString = String(currentAmount);
+            }
+        }
+        setAmountReceived(initialAmountReceivedString);
+    } else {
+        // If there's no bill, reset amountReceived (e.g., modal has just opened for new bill generation)
+        setAmountReceived("");
+    }
+  }, [bill, currentAmount]); // Depends on bill and currentAmount (which is derived from bill)
 
   // Mutation to update bill status
   const updateBillStatusMutation = api.playerManagement.updateBillStatus.useMutation({
@@ -588,48 +617,18 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
   // For displaying status, always use local state first if available
   const displayStatus = currentStatus || (billData?.status || PaymentStatus.PENDING);
   
+  // Calculate food items total for order bills
+  const foodItemsTotal = (() => {
+    if (isOrderBill && billData?.order?.notes) {
+      const foodItems = parseFoodItemsFromNotes(billData.order.notes);
+      return foodItems.reduce((total, item) => total + item.total, 0);
+    }
+    return 0;
+  })();
+  
   // For displaying amount, always use local state first if available
   // If not available, calculate from sessions to avoid incorrect amounts
-  const displayAmount = currentAmount !== null 
-    ? currentAmount 
-    : sessions.reduce((total, session) => {
-        try {
-          // For Frame devices
-          if (session.device?.type === "FRAME") {
-            return total + (50 * (session.playerCount || 1));
-          }
-          
-          // For completed sessions, use stored cost
-          if (session.status !== "ACTIVE" && session.cost) {
-            return total + Number(session.cost);
-          }
-          
-          // For active sessions, calculate cost
-          const durationInMinutes = session.status === "ACTIVE"
-            ? Math.ceil((new Date().getTime() - new Date(session.startTime).getTime()) / (1000 * 60))
-            : (session.duration || 0);
-            
-          // Calculate using pricing function
-          try {
-            const price = calculatePrice(
-              session.device?.type as any,
-              session.playerCount || 1,
-              durationInMinutes
-            );
-            return total + price;
-          } catch (error) {
-            console.error("Error calculating price:", error);
-            // Fallback calculation
-            const hourlyRate = Number(session.device?.hourlyRate || 0);
-            const roundedTime = roundTimeToCharge(durationInMinutes);
-            const cost = (hourlyRate / 60) * roundedTime;
-            return total + cost;
-          }
-        } catch (err) {
-          console.error("Error calculating session cost:", err);
-          return total;
-        }
-      }, 0);
+  const displayAmount = currentAmount ?? 0;
 
   // Fix the customer selection UI to only appear when marking as DUE
   const renderCustomerSelection = () => {
@@ -869,6 +868,42 @@ export default function BillModal({ isOpen, onClose, tokenId, orderId, billId, o
                   </table>
                 </div>
               </div>
+
+              {/* Food Items Section */}
+              {isOrderBill && billData?.order?.notes && (
+                <div className="mb-5">
+                  <h4 className="font-medium mb-2">Food Items</h4>
+                  {(() => {
+                    const foodItems = parseFoodItemsFromNotes(billData.order.notes);
+                    return foodItems.length > 0 ? (
+                      <div className="border rounded-lg overflow-hidden">
+                        <table className="min-w-full divide-y divide-gray-200">
+                          <thead className="bg-gray-50">
+                            <tr>
+                              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Item</th>
+                              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Quantity</th>
+                              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Price</th>
+                              <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                            </tr>
+                          </thead>
+                          <tbody className="bg-white divide-y divide-gray-200">
+                            {foodItems.map((item, index) => (
+                              <tr key={index}>
+                                <td className="px-3 py-2 whitespace-nowrap">{item.name}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{item.quantity}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{formatCurrency(item.price)}</td>
+                                <td className="px-3 py-2 whitespace-nowrap">{formatCurrency(item.total)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="text-gray-500 text-sm italic">No food items in this order</p>
+                    );
+                  })()}
+                </div>
+              )}
 
                 <div className="border-t pt-4 flex justify-between items-start">
                   <div>

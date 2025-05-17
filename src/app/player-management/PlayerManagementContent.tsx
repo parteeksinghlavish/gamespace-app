@@ -582,13 +582,11 @@ export default function PlayerManagementContent() {
                         {(() => {
                           if (!order.notes) return null;
                           const { foodItems, otherNotes } = extractFoodItems(order.notes);
-                          console.log('Parsed foodItems (from extractFoodItems):', JSON.stringify(foodItems)); 
                           if (foodItems.length === 0) return null;
                           
                           // foodItems from extractFoodItems are now correctly grouped and named.
                           // The previous render-time grouping logic is no longer needed.
                           const displayItems = foodItems;
-                          // console.log('Displayable foodItems (after primary parsing):', JSON.stringify(displayItems)); // Optional: keep for debugging
 
                           return (
                             <div className="overflow-x-auto">
@@ -901,9 +899,9 @@ export default function PlayerManagementContent() {
               return;
             }
             
-            // Format food items with quantities for better display
+            // Format food items - the backend will handle the "Qx Name (Price)" string construction
             const formattedItems = order.items.map((item: any) => ({
-              name: `${item.quantity}x ${item.name}${item.price ? ` (₹${item.price})` : ''}`,
+              name: item.name, // Use the original item name
               price: item.price,
               quantity: item.quantity
             }));

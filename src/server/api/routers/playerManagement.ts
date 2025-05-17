@@ -1,10 +1,10 @@
 import { z } from "zod";
 import { createTRPCRouter, protectedProcedure } from "~/server/api/trpc";
 import { TRPCError } from "@trpc/server";
-import type { Device, Session, Order } from "@prisma/client";
-import { DeviceType, SessionStatus, PaymentStatus, OrderStatus } from "~/lib/constants";
-import { calculatePrice, roundTimeToCharge, calculateDuration } from "~/lib/pricing";
+import { PaymentStatus, SessionStatus, DeviceType, OrderStatus } from "~/lib/constants";
+import { calculatePrice, roundTimeToCharge, calculateDuration, calculateSessionCost } from "~/lib/pricing";
 import { randomUUID } from "crypto";
+import type { Session } from "@prisma/client";
 
 // Enum values matching Prisma's generated enums
 export { SessionStatus, DeviceType, PaymentStatus, OrderStatus };
@@ -15,6 +15,53 @@ function generateOrderNumber(): string {
   const datePart = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const randomPart = Math.floor(Math.random() * 10000).toString().padStart(4, "0");
   return `GSO-${datePart}-${randomPart}`;
+}
+
+interface ParsedFoodItem {
+  name: string;
+  quantity: number;
+  price: number;
+  total: number;
+}
+
+function parseFoodItemsFromNotes(notes: string | null | undefined): ParsedFoodItem[] {
+  if (!notes) {
+    return [];
+  }
+
+  const foodItemsSectionRegex = /Food items:(.*?)(?:,|$|\n)/;
+  const foodItemsSectionMatch = notes.match(foodItemsSectionRegex);
+  
+  if (!foodItemsSectionMatch || typeof foodItemsSectionMatch[1] === 'undefined') {
+    return [];
+  }
+
+  const itemsString = foodItemsSectionMatch[1].trim();
+  if (!itemsString) {
+    return [];
+  }
+
+  const itemsArray = itemsString.split('|');
+  const parsedItems: ParsedFoodItem[] = [];
+
+  const itemRegex = /(\d+)x\s*(.*?)\s*\(₹(\d+\.?\d*)\)/;
+  for (const itemStr of itemsArray) {
+    const match = itemStr.match(itemRegex);
+    if (match && match[1] && match[2] && match[3]) {
+      const quantity = parseInt(match[1], 10);
+      const name = match[2].trim();
+      const price = parseFloat(match[3]);
+      if (!isNaN(quantity) && !isNaN(price)) {
+        parsedItems.push({
+          name,
+          quantity,
+          price,
+          total: quantity * price,
+        });
+      }
+    }
+  }
+  return parsedItems;
 }
 
 export const playerManagementRouter = createTRPCRouter({
@@ -545,6 +592,7 @@ export const playerManagementRouter = createTRPCRouter({
               device: true
             }
           },
+          // No direct relation for OrderItems, will parse from notes
         },
       });
 
@@ -610,8 +658,20 @@ export const playerManagementRouter = createTRPCRouter({
           totalAmount += sessionCost;
         }
       }
+
+      // Calculate total amount for food items from order notes
+      let foodItemsTotal = 0;
+      if (order.notes) {
+        const parsedFoodItems = parseFoodItemsFromNotes(order.notes);
+        console.log("Parsed food items for order:", order.orderNumber, parsedFoodItems);
+        for (const item of parsedFoodItems) {
+          foodItemsTotal += item.total;
+        }
+      }
+      totalAmount += foodItemsTotal;
+      console.log(`Total food items amount for order ${order.orderNumber}: ${foodItemsTotal}`);
       
-      console.log(`Total calculated amount for order ${order.orderNumber}: ${totalAmount}`);
+      console.log(`Total calculated amount for order ${order.orderNumber} (including food): ${totalAmount}`);
 
       // Create the bill
       const bill = await ctx.db.bill.create({
@@ -1400,9 +1460,9 @@ export const playerManagementRouter = createTRPCRouter({
           existingFoodItems = itemsStr.split('|')
             .map(item => {
               const itemMatch = item.trim().match(/^(\d+)x (.+?) \(₹(\d+(?:\.\d+)?)\)$/);
-              if (itemMatch) {
+              if (itemMatch && itemMatch[1] && itemMatch[2] && itemMatch[3]) {
                 return {
-                  quantity: parseInt(itemMatch[1]),
+                  quantity: parseInt(itemMatch[1], 10),
                   name: itemMatch[2].trim(),
                   price: parseFloat(itemMatch[3])
                 };
@@ -1416,9 +1476,13 @@ export const playerManagementRouter = createTRPCRouter({
       // Helper function to normalize item names for comparison
       const normalizeItemName = (name: string) => {
         // Remove any variant info after the dash
-        const baseName = name.split('-')[0];
+        const nameParts = name.split('-');
+        const baseName = nameParts[0];
         // Clean up and standardize
-        return baseName.toLowerCase().trim();
+        if (baseName) {
+          return baseName.toLowerCase().trim();
+        }
+        return name.toLowerCase().trim(); // Fallback for names without '-'
       };
       
       // Combine new items with existing items (adding quantities for same items)
@@ -1435,7 +1499,13 @@ export const playerManagementRouter = createTRPCRouter({
         
         if (existingItemIndex >= 0) {
           // Increment quantity of existing item
-          combinedItems[existingItemIndex].quantity += newItem.quantity;
+          const itemToUpdate = combinedItems[existingItemIndex];
+          if (itemToUpdate) {
+            itemToUpdate.quantity += newItem.quantity;
+          } else {
+            // This case should ideally not be reached if existingItemIndex >= 0 and filter(Boolean) worked
+            console.error("Error: itemToUpdate is undefined despite existingItemIndex >= 0");
+          }
         } else {
           // Add as new item
           combinedItems.push({
