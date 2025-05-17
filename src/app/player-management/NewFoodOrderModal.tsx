@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { FoodItem } from '~/types';
+import type { FoodItem } from '~/types';
 import NewFoodOrderModalBase from '../food-order/NewFoodOrderModal';
 
 interface NewFoodOrderModalProps {
@@ -15,6 +15,7 @@ interface NewFoodOrderModalProps {
   }) => void;
   activeTokens: number[];
   existingOrderId?: string;
+  preselectedTokenNo?: number;
 }
 
 export default function NewFoodOrderModal({
@@ -22,7 +23,8 @@ export default function NewFoodOrderModal({
   onClose,
   onSubmit,
   activeTokens,
-  existingOrderId
+  existingOrderId,
+  preselectedTokenNo
 }: NewFoodOrderModalProps) {
   // Just pass through to the base component - this wrapper allows us to customize if needed
   return (
@@ -32,6 +34,7 @@ export default function NewFoodOrderModal({
       onSubmit={onSubmit}
       activeTokens={activeTokens}
       existingOrderId={existingOrderId}
+      preselectedTokenNo={preselectedTokenNo}
     />
   );
 } 

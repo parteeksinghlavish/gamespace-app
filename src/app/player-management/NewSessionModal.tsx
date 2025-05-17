@@ -305,24 +305,38 @@ export default function NewSessionModal({
   const isTokenAssigned = (tokenNumber: number) => {
     if (!existingTokens) return false;
 
-    // A token is considered "in use" if ANY token with this number
-    // has active sessions TODAY
-    
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Start of today
-    
-    for (const token of existingTokens) {
+    // A token number is considered "in use" or "busy" if ANY token instance 
+    // with this number from today meets any of the following conditions:
+    // 1. Has any active gaming sessions.
+    // 2. Is associated with an active order (e.g., food order, or gaming order still open).
+    // 3. Has any PENDING bills (DUE bills mean the token is considered completed for the day and available).
+
+    for (const token of existingTokens as Token[]) { // Added type assertion for token
       // Skip tokens with different numbers
       if (token.tokenNo !== tokenNumber) continue;
       
-      // Check only for active sessions
-      const hasActiveSession = (token as Token).sessions?.some(
-        (session: any) => session.status === "ACTIVE"
+      // Condition 1: Check for active gaming sessions
+      const hasActiveSession = token.sessions?.some(
+        (session: any) => session.status === "ACTIVE" // Assuming SessionStatus.ACTIVE
       );
-      
       if (hasActiveSession) {
-        // Has active sessions - token is in use
-        return true;
+        return true; // Token busy due to active session
+      }
+
+      // Condition 2: Check for active orders linked to this token
+      const hasActiveOrder = token.orders?.some(
+        (order: any) => order.status === "ACTIVE" // Assuming OrderStatus.ACTIVE
+      );
+      if (hasActiveOrder) {
+        return true; // Token busy due to an active order
+      }
+
+      // Condition 3: Check for PENDING bills linked to this token
+      const hasPendingBill = token.bills?.some(
+        (bill: any) => bill.status === "PENDING" // Assuming PaymentStatus.PENDING
+      );
+      if (hasPendingBill) {
+        return true; // Token busy due to a PENDING bill
       }
     }
     

@@ -155,6 +155,20 @@ export default function PlayerManagementContent() {
     }
   });
 
+  // Placeholder for new mutation - this will need to be implemented in the backend router
+  const createTokenAndOrderForFoodMutation = api.playerManagement.createTokenAndOrderForFood.useMutation({
+    onSuccess: (newOrder) => {
+      showToast(`Food order placed for new token successfully! Order: ${newOrder.orderNumber}`, 'success');
+      setShowFoodOrderModal(false);
+      setLocalOrderId(null);
+      setLocalTokenNoForFoodModal(undefined);
+      refetch();
+    },
+    onError: (error) => {
+      showToast(`Error creating food order for new token: ${error.message}`, 'error');
+    }
+  });
+
   // Add a new mutation for adding food items to an existing order
   const addFoodToOrderMutation = api.playerManagement.addFoodToOrder.useMutation({
     onSuccess: () => {
@@ -231,6 +245,7 @@ export default function PlayerManagementContent() {
 
   // Local state for session management
   const [localOrderId, setLocalOrderId] = useState<string | null>(null);
+  const [localTokenNoForFoodModal, setLocalTokenNoForFoodModal] = useState<number | undefined>(undefined);
   
   // Handlers
   const handleEndSession = (sessionId: number) => {
@@ -285,8 +300,9 @@ export default function PlayerManagementContent() {
   };
 
   // Handle adding food to an existing order
-  const handleAddFoodToOrder = (orderId: string) => {
+  const handleAddFoodToOrder = (orderId: string, tokenNo: number) => {
     setLocalOrderId(orderId);
+    setLocalTokenNoForFoodModal(tokenNo); // Store the tokenNo for the modal
     setShowFoodOrderModal(true);
   };
 
@@ -408,10 +424,10 @@ export default function PlayerManagementContent() {
                             
                             {order.status === 'ACTIVE' && (
                               <button
-                                className="bg-blue-500 text-white hover:bg-blue-600 px-3 py-2 rounded font-medium flex items-center"
+                                className="bg-blue-500 text-white hover:bg-blue-600 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center"
                                 onClick={() => handleAddToOrder(order.id)}
                               >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                                 </svg>
                                 Add Session
@@ -420,10 +436,10 @@ export default function PlayerManagementContent() {
                             
                             {order.status === 'ACTIVE' && (
                               <button
-                                className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-2 rounded font-medium flex items-center ml-2"
-                                onClick={() => handleAddFoodToOrder(order.id)}
+                                className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center ml-2"
+                                onClick={() => handleAddFoodToOrder(order.id, token.tokenNo)}
                               >
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                                 </svg>
                                 Add Food
@@ -431,14 +447,14 @@ export default function PlayerManagementContent() {
                             )}
                             
                             <button
-                              className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-2 rounded font-medium flex items-center"
+                              className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center"
                               onClick={() => handleGenerateOrderBill(order.id)}
                               disabled={generateOrderBillMutation.isPending}
                             >
                               {generateOrderBillMutation.isPending && order.id === generateOrderBillMutation.variables?.orderId ? (
-                                <span className="inline-block h-4 w-4 border-2 border-t-white rounded-full animate-spin mr-1"></span>
+                                <span className="inline-block h-1.5 w-1.5 border-2 border-t-white rounded-full animate-spin mr-1"></span>
                               ) : (
-                                <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z" />
                                 </svg>
                               )}
@@ -555,7 +571,7 @@ export default function PlayerManagementContent() {
                                     <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
                                       {session.status === SessionStatus.ACTIVE ? (
                                         <button
-                                          className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center"
+                                          className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium flex items-center"
                                           onClick={() => handleEndSession(session.id)}
                                         >
                                           <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -648,10 +664,10 @@ export default function PlayerManagementContent() {
                       </div>
                       
                       <button
-                        className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-2 rounded font-medium flex items-center"
+                        className="bg-orange-500 text-white hover:bg-orange-600 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center"
                         onClick={() => handleGenerateBill(token.id)}
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2z" />
                         </svg>
                         Generate Bill
@@ -729,7 +745,7 @@ export default function PlayerManagementContent() {
                             <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
                               {session.status === SessionStatus.ACTIVE ? (
                                 <button
-                                  className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition-colors flex items-center"
+                                  className="bg-red-500 hover:bg-red-600 text-white px-3 py-1.5 rounded-lg text-xs font-medium flex items-center"
                                   onClick={() => handleEndSession(session.id)}
                                 >
                                   <svg xmlns="http://www.w3.org/2000/svg" className="h-3.5 w-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -889,53 +905,55 @@ export default function PlayerManagementContent() {
           onClose={() => {
             setShowFoodOrderModal(false);
             setLocalOrderId(null);
+            setLocalTokenNoForFoodModal(undefined); // Reset tokenNo
           }}
           onSubmit={(order) => {
-            // Find the actual token object from the token number
-            const tokenObject = tokens?.find(token => token.tokenNo === order.tokenNo);
-            
-            if (!tokenObject) {
-              showToast(`Error: Token #${order.tokenNo} not found in the system`, 'error');
-              return;
-            }
-            
-            // Format food items - the backend will handle the "Qx Name (Price)" string construction
             const formattedItems = order.items.map((item: any) => ({
-              name: item.name, // Use the original item name
+              name: item.name,
               price: item.price,
               quantity: item.quantity
             }));
-            
-            // Check if we should add to an existing order or create a new one
-            if (localOrderId) {
-              // We have an explicitly selected order ID, so add the food items to this order
+
+            if (order.tokenNo === -1) { // Indicates a new token is requested
+              createTokenAndOrderForFoodMutation.mutate({
+                foodItems: formattedItems
+                // any other necessary params for token/order creation, e.g., customer info if applicable
+              });
+            } else if (localOrderId) {
+              // Adding food to an explicitly selected existing order (via button in order card)
               addFoodToOrderMutation.mutate({
                 orderId: localOrderId,
                 foodItems: formattedItems
               });
             } else {
-              // Check if the selected token already has any active orders
+              // This case handles when an existing token is selected from the grid
+              // in the modal (opened via top-right "ADD FOOD" button)
+              // We need to find if this token has an active order, or create a new order for it.
+              const tokenObject = tokens?.find(t => t.tokenNo === order.tokenNo);
+              if (!tokenObject) {
+                showToast(`Error: Token #${order.tokenNo} not found.`, 'error');
+                return;
+              }
+
               const activeOrders = tokenObject.orders?.filter(
-                (order: any) => order.status === 'ACTIVE'
+                (o: any) => o.status === 'ACTIVE'
               );
-              
+
               if (activeOrders && activeOrders.length > 0) {
-                // Use the most recent active order (assuming first is most recent if sorted, or just pick one)
-                const mostRecentOrder = activeOrders[0];
+                const mostRecentOrder = activeOrders[0]; // Assuming first is most recent
                 if (mostRecentOrder) {
                   addFoodToOrderMutation.mutate({
                     orderId: mostRecentOrder.id,
                     foodItems: formattedItems
                   });
-                  showToast(`Adding food to existing order ${mostRecentOrder.orderNumber}`, 'success');
+                  showToast(`Adding food to existing order ${mostRecentOrder.orderNumber} for Token #${order.tokenNo}`, 'success');
                 } else {
-                  // This case should ideally not be reached if activeOrders.length > 0
-                  showToast(`Error: Could not determine active order to add food to.`, 'error');
+                  showToast(`Error: Could not find active order for Token #${order.tokenNo}.`, 'error');
                 }
               } else {
-                // No active orders for this token, create a new one
+                // No active orders for this token, create a new one for this token
                 createFoodOrderMutation.mutate({
-                  tokenId: tokenObject.id,
+                  tokenId: tokenObject.id, // Pass existing tokenId
                   foodItems: formattedItems
                 });
               }
@@ -943,6 +961,7 @@ export default function PlayerManagementContent() {
           }}
           activeTokens={tokens?.map(token => token.tokenNo) || []}
           existingOrderId={localOrderId || undefined}
+          preselectedTokenNo={localTokenNoForFoodModal}
         />
       )}
     </div>

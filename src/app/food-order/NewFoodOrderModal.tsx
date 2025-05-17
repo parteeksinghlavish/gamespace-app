@@ -34,6 +34,7 @@ type NewFoodOrderModalProps = {
   }) => void;
   activeTokens: number[];
   existingOrderId?: string;
+  preselectedTokenNo?: number;
 };
 
 const NewFoodOrderModal = ({ 
@@ -41,9 +42,11 @@ const NewFoodOrderModal = ({
   onClose, 
   onSubmit,
   activeTokens = [],
-  existingOrderId
+  existingOrderId,
+  preselectedTokenNo
 }: NewFoodOrderModalProps) => {
   const [selectedToken, setSelectedToken] = useState<number | null>(null);
+  const [isCreatingNewToken, setIsCreatingNewToken] = useState(false);
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [selectedItem, setSelectedItem] = useState<FoodItem | null>(null);
   const [selectedVariant, setSelectedVariant] = useState<FoodVariant | null>(null);
@@ -51,18 +54,26 @@ const NewFoodOrderModal = ({
   const [orderItems, setOrderItems] = useState<OrderItem[]>([]);
   const [orderTotal, setOrderTotal] = useState(0);
   
-  // Reset state when modal opens
-  // useEffect(() => {
-  //   if (isOpen) {
-  //     setSelectedToken(null);
-  //     setSelectedCategory(null);
-  //     setSelectedItem(null);
-  //     setSelectedVariant(null);
-  //     setQuantity(1);
-  //     setOrderItems([]);
-  //     setOrderTotal(0);
-  //   }
-  // }, [isOpen]);
+  // Reset state when modal opens or preselectedTokenNo changes
+  useEffect(() => {
+    if (isOpen) {
+      if (preselectedTokenNo) {
+        setSelectedToken(preselectedTokenNo);
+        setIsCreatingNewToken(false);
+      } else {
+        setSelectedToken(null); 
+        // Reset new token flag if not preselected
+        // User must explicitly click "+ New Token" each time if they want a new one
+        setIsCreatingNewToken(false); 
+      }
+      setSelectedCategory(null);
+      setSelectedItem(null);
+      setSelectedVariant(null);
+      setQuantity(1);
+      setOrderItems([]);
+      setOrderTotal(0);
+    }
+  }, [isOpen, preselectedTokenNo]); // Add preselectedTokenNo to dependency array
 
   // Update order total whenever items change
   useEffect(() => {
@@ -131,11 +142,14 @@ const NewFoodOrderModal = ({
 
   // Submit the order
   const handleSubmitOrder = () => {
-    if (!selectedToken || orderItems.length === 0) return;
+    // If creating new token, selectedToken might be null initially, but isCreatingNewToken will be true
+    if ((!selectedToken && !isCreatingNewToken) || orderItems.length === 0) return;
     
     onSubmit({
-      tokenId: selectedToken,
-      tokenNo: selectedToken,
+      // If isCreatingNewToken is true, pass a special indicator for tokenNo/tokenId
+      // The backend or calling component will handle actual token creation.
+      tokenId: isCreatingNewToken ? -1 : selectedToken!, 
+      tokenNo: isCreatingNewToken ? -1 : selectedToken!, 
       items: orderItems.map(item => ({
         id: item.id,
         name: item.name,
@@ -160,9 +174,15 @@ const NewFoodOrderModal = ({
         {/* Header */}
         <div className="px-6 py-4 border-b border-gray-200 flex justify-between items-center bg-gradient-to-r from-blue-50 to-indigo-50">
           <div>
-            <h2 className="text-xl font-bold text-gray-800">New Food Order</h2>
-            {selectedToken && (
-              <p className="text-sm text-blue-600">Token #{selectedToken}</p>
+            <h2 className="text-xl font-bold text-gray-800">
+              New Food Order 
+              {preselectedTokenNo && (
+                <span className="text-lg font-semibold text-blue-600 ml-2">(Token #{preselectedTokenNo})</span>
+              )}
+            </h2>
+            {/* Display selectedToken if not preselected - useful when user picks from grid */}
+            {!preselectedTokenNo && selectedToken && (
+              <p className="text-sm text-blue-600 mt-1">Token #{selectedToken}</p>
             )}
           </div>
           <button
@@ -178,30 +198,54 @@ const NewFoodOrderModal = ({
         <div className="flex flex-col md:flex-row flex-1 overflow-hidden">
           {/* Left side: Food selection form */}
           <div className="w-full md:w-2/3 flex flex-col overflow-hidden p-6 space-y-6">
-            {/* Token Selection - Visual Grid */}
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-gray-700">Select Token</label>
-              <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
-                {uniqueTokens.map(token => (
+            {/* Token Selection - Visual Grid or Display */}
+            {preselectedTokenNo ? (
+              null 
+            ) : (
+              <div className="space-y-3">
+                <label className="block text-sm font-medium text-gray-700">Select Token</label>
+                <div className="grid grid-cols-4 sm:grid-cols-6 md:grid-cols-8 gap-2">
+                  {uniqueTokens.map(token => (
+                    <button
+                      key={token}
+                      onClick={() => {
+                        setSelectedToken(token);
+                        setIsCreatingNewToken(false); // Clear new token flag if existing token is selected
+                      }}
+                      className={`px-3 py-2 rounded-lg text-center font-medium transition-all transform hover:scale-105 ${
+                        selectedToken === token && !isCreatingNewToken
+                          ? 'bg-blue-600 text-white shadow-md ring-2 ring-blue-300'
+                          : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'
+                      }`}
+                    >
+                      #{token}
+                    </button>
+                  ))}
+                  {/* "+ New Token" Button */}
                   <button
-                    key={token}
-                    onClick={() => setSelectedToken(token)}
-                    className={`px-3 py-2 rounded-lg text-center font-medium transition-all transform hover:scale-105 ${
-                      selectedToken === token
-                        ? 'bg-blue-600 text-white shadow-md ring-2 ring-blue-300'
-                        : 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50'
+                    onClick={() => {
+                      setSelectedToken(null); // Clear selected token if any
+                      setIsCreatingNewToken(true);
+                    }}
+                    className={`px-3 py-2 rounded-lg text-center font-medium transition-all transform hover:scale-105 flex items-center justify-center ${
+                      isCreatingNewToken
+                        ? 'bg-green-600 text-white shadow-md ring-2 ring-green-300'
+                        : 'bg-gray-100 border border-gray-200 text-gray-700 hover:bg-gray-200'
                     }`}
                   >
-                    #{token}
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" />
+                    </svg>
+                    New
                   </button>
-                ))}
+                </div>
+                {uniqueTokens.length === 0 && !isCreatingNewToken && (
+                  <p className="text-sm text-red-600 mt-1">No active tokens available. You can create a new token for this order.</p>
+                )}
               </div>
-              {uniqueTokens.length === 0 && (
-                <p className="text-sm text-red-600 mt-1">No active tokens available</p>
-              )}
-            </div>
+            )}
 
-            {/* Category Selection */}
+            {/* Category Selection - enable if a token is selected OR if creating a new token */}
             <div className="space-y-2">
               <label className="block text-sm font-medium text-gray-700">Select Category</label>
               <select
@@ -210,7 +254,7 @@ const NewFoodOrderModal = ({
                   handleCategorySelect(e.currentTarget.value)
                 }
                 className="mt-1 block w-full pl-3 pr-10 py-2.5 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-lg bg-white shadow-sm"
-                disabled={!selectedToken}
+                disabled={!selectedToken && !isCreatingNewToken} // Enable if selectedToken OR isCreatingNewToken
               >
                 <option value="">Select a category</option>
                 {foodMenu.map(category => (
@@ -232,7 +276,7 @@ const NewFoodOrderModal = ({
                     if (item) handleItemSelect(item);
                   }}
                   className="mt-1 block w-full pl-3 pr-10 py-2.5 text-base border-gray-300 focus:outline-none focus:ring-blue-500 focus:border-blue-500 sm:text-sm rounded-lg bg-white shadow-sm"
-                  disabled={!selectedToken}
+                  disabled={!selectedToken && !isCreatingNewToken}
                 >
                   <option value="">Select an item</option>
                   {foodMenu
@@ -319,7 +363,9 @@ const NewFoodOrderModal = ({
           <div className="w-full md:w-1/3 border-l border-gray-200 flex flex-col overflow-hidden bg-gray-50">
             <div className="p-5 border-b border-gray-200 bg-gradient-to-r from-blue-50 to-indigo-50">
               <h3 className="text-lg font-semibold text-gray-800">Order Summary</h3>
-              {selectedToken ? (
+              {isCreatingNewToken ? (
+                <div className="mt-1 text-sm text-green-600 font-medium">For a New Token</div>
+              ) : selectedToken ? (
                 <div className="mt-1 text-sm text-blue-600 font-medium">Token #{selectedToken}</div>
               ) : (
                 <div className="mt-1 text-sm text-orange-600">Select a token to place an order</div>
@@ -369,9 +415,9 @@ const NewFoodOrderModal = ({
               </div>
               <button
                 onClick={handleSubmitOrder}
-                disabled={!selectedToken || orderItems.length === 0}
+                disabled={(!selectedToken && !isCreatingNewToken) || orderItems.length === 0}
                 className={`w-full bg-green-600 text-white py-3 rounded-lg font-medium ${
-                  !selectedToken || orderItems.length === 0 
+                  (!selectedToken && !isCreatingNewToken) || orderItems.length === 0 
                     ? 'opacity-50 cursor-not-allowed' 
                     : 'hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 shadow-sm hover:shadow-md transition-all'
                 }`}

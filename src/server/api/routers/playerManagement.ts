@@ -201,7 +201,7 @@ export const playerManagementRouter = createTRPCRouter({
       if (input.foodItems && input.foodItems.length > 0) {
         const foodItemsText = input.foodItems
           .map(item => `${item.quantity}x ${item.name} (₹${item.price})`)
-          .join(', ');
+          .join('|');
           
         notes = notes
           ? `${notes}, Food items: ${foodItemsText}`
@@ -224,6 +224,69 @@ export const playerManagementRouter = createTRPCRouter({
 
       return order;
     }),
+
+  // *** NEW MUTATION: Create Token and Order for Food ***
+  createTokenAndOrderForFood: protectedProcedure
+    .input(
+      z.object({
+        // We don't need customerId or other specifics for a simple food-only token initially,
+        // but this can be expanded if needed.
+        foodItems: z.array(
+          z.object({
+            name: z.string(),
+            price: z.number(),
+            quantity: z.number().min(1),
+          })
+        ).min(1), // Must have at least one food item
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // 1. Create a new Token
+      // Find the next available token number
+      const lastToken = await ctx.db.token.findFirst({
+        orderBy: { tokenNo: 'desc' },
+      });
+      const nextTokenNo = lastToken ? lastToken.tokenNo + 1 : 1;
+
+      const newToken = await ctx.db.token.create({
+        data: {
+          tokenNo: nextTokenNo,
+          // Add any other default fields for a token if necessary.
+          // For a food-only token, status might be different, or it might not have sessions initially.
+          // For simplicity, we'll create a standard token for now.
+        },
+      });
+
+      // 2. Create a new Order for this Token
+      const orderNumber = generateOrderNumber(); // Reuse your helper
+
+      let notes = '';
+      if (input.foodItems && input.foodItems.length > 0) {
+        const foodItemsText = input.foodItems
+          .map(item => `${item.quantity}x ${item.name} (₹${item.price})`)
+          .join('|'); // Using '|' as a separator, consistent with addFoodToOrder
+        
+        notes = `Food items: ${foodItemsText}`;
+      }
+
+      const newOrder = await ctx.db.order.create({
+        data: {
+          id: randomUUID(), // Ensure you have crypto.randomUUID or similar
+          orderNumber,
+          tokenId: newToken.id, // Link to the newly created token
+          notes: notes,
+          status: OrderStatus.ACTIVE, // Or perhaps a specific status for food-only orders?
+                                      // For now, ACTIVE allows adding more items/sessions later if needed.
+          // startTime will be set automatically by Prisma (default now())
+        },
+        include: {
+          token: true, // Include the token in the response
+        },
+      });
+
+      return newOrder; // Return the newly created order (which includes token info)
+    }),
+  // *** END OF NEW MUTATION ***
 
   // Update order status
   updateOrderStatus: protectedProcedure
