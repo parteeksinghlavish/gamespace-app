@@ -229,62 +229,74 @@ export const playerManagementRouter = createTRPCRouter({
   createTokenAndOrderForFood: protectedProcedure
     .input(
       z.object({
-        // We don't need customerId or other specifics for a simple food-only token initially,
-        // but this can be expanded if needed.
         foodItems: z.array(
           z.object({
             name: z.string(),
             price: z.number(),
             quantity: z.number().min(1),
           })
-        ).min(1), // Must have at least one food item
+        ).min(1),
       })
     )
     .mutation(async ({ ctx, input }) => {
-      // 1. Create a new Token
-      // Find the next available token number
-      const lastToken = await ctx.db.token.findFirst({
-        orderBy: { tokenNo: 'desc' },
-      });
-      const nextTokenNo = lastToken ? lastToken.tokenNo + 1 : 1;
+      let newToken;
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0); 
 
-      const newToken = await ctx.db.token.create({
-        data: {
-          tokenNo: nextTokenNo,
-          // Add any other default fields for a token if necessary.
-          // For a food-only token, status might be different, or it might not have sessions initially.
-          // For simplicity, we'll create a standard token for now.
-        },
-      });
+        const lastTokenToday = await ctx.db.token.findFirst({
+          where: { createdAt: { gte: today } },
+          orderBy: { tokenNo: 'desc' },
+        });
+        const nextTokenNo = lastTokenToday ? lastTokenToday.tokenNo + 1 : 1;
+        
+        newToken = await ctx.db.token.create({
+          data: { tokenNo: nextTokenNo },
+        });
+      } catch (error) {
+        console.error("[PlayerManagement] createTokenAndOrderForFood: CRITICAL - Error creating new token:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to create a new token for the food order.",
+          cause: error,
+        });
+      }
 
-      // 2. Create a new Order for this Token
-      const orderNumber = generateOrderNumber(); // Reuse your helper
-
+      const orderNumber = generateOrderNumber();
       let notes = '';
       if (input.foodItems && input.foodItems.length > 0) {
         const foodItemsText = input.foodItems
           .map(item => `${item.quantity}x ${item.name} (₹${item.price})`)
-          .join('|'); // Using '|' as a separator, consistent with addFoodToOrder
-        
+          .join('|');
         notes = `Food items: ${foodItemsText}`;
       }
 
-      const newOrder = await ctx.db.order.create({
-        data: {
-          id: randomUUID(), // Ensure you have crypto.randomUUID or similar
-          orderNumber,
-          tokenId: newToken.id, // Link to the newly created token
-          notes: notes,
-          status: OrderStatus.ACTIVE, // Or perhaps a specific status for food-only orders?
-                                      // For now, ACTIVE allows adding more items/sessions later if needed.
-          // startTime will be set automatically by Prisma (default now())
-        },
-        include: {
-          token: true, // Include the token in the response
-        },
-      });
+      const orderDataForCreation = {
+        id: randomUUID(), 
+        orderNumber,
+        tokenId: newToken.id, 
+        notes: notes,
+        status: OrderStatus.ACTIVE, 
+      };
 
-      return newOrder; // Return the newly created order (which includes token info)
+      let newOrder;
+      try {
+        newOrder = await ctx.db.order.create({
+          data: orderDataForCreation,
+          include: {
+            token: true, 
+          },
+        });
+      } catch (error) {
+        console.error("[PlayerManagement] createTokenAndOrderForFood: CRITICAL - Error creating new order. Attempted data:", JSON.stringify(orderDataForCreation, null, 2), "Error:", error);
+        throw new TRPCError({
+          code: "INTERNAL_SERVER_ERROR",
+          message: "Failed to create a new order for the food items.",
+          cause: error,
+        });
+      }
+      
+      return newOrder; 
     }),
   // *** END OF NEW MUTATION ***
 

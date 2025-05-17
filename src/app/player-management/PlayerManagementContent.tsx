@@ -961,59 +961,79 @@ export default function PlayerManagementContent() {
             setLocalOrderId(null);
             setLocalTokenNoForFoodModal(undefined); // Reset tokenNo
           }}
-          onSubmit={(order) => {
-            const formattedItems = order.items.map((item: any) => ({
+          onSubmit={async (orderDataFromModal) => { 
+            const formattedItems = orderDataFromModal.items.map((item: any) => ({ 
               name: item.name,
               price: item.price,
               quantity: item.quantity
             }));
 
-            if (order.tokenNo === -1) { // Indicates a new token is requested
+            if (orderDataFromModal.tokenNo === -1) { 
               createTokenAndOrderForFoodMutation.mutate({
                 foodItems: formattedItems
-                // any other necessary params for token/order creation, e.g., customer info if applicable
               });
             } else if (localOrderId) {
-              // Adding food to an explicitly selected existing order (via button in order card)
               addFoodToOrderMutation.mutate({
                 orderId: localOrderId,
                 foodItems: formattedItems
               });
             } else {
-              // This case handles when an existing token is selected from the grid
-              // in the modal (opened via top-right "ADD FOOD" button)
-              // We need to find if this token has an active order, or create a new order for it.
-              const tokenObject = tokens?.find(t => t.tokenNo === order.tokenNo);
-              if (!tokenObject) {
-                showToast(`Error: Token #${order.tokenNo} not found.`, 'error');
-                return;
-              }
+              const selectedTokenNoFromModal = orderDataFromModal.tokenNo;
+              try {
+                await utils.playerManagement.getTodaySessions.refetch(); 
+                const allTokensAfterRefetch = utils.playerManagement.getTodaySessions.getData(); 
 
-              const activeOrders = tokenObject.orders?.filter(
-                (o: any) => o.status === 'ACTIVE'
-              );
+                const matchingTokenInstances = allTokensAfterRefetch?.filter(t => t.tokenNo === selectedTokenNoFromModal);
 
-              if (activeOrders && activeOrders.length > 0) {
-                const mostRecentOrder = activeOrders[0]; // Assuming first is most recent
-                if (mostRecentOrder) {
-                  addFoodToOrderMutation.mutate({
-                    orderId: mostRecentOrder.id,
-                    foodItems: formattedItems
-                  });
-                  showToast(`Adding food to existing order ${mostRecentOrder.orderNumber} for Token #${order.tokenNo}`, 'success');
-                } else {
-                  showToast(`Error: Could not find active order for Token #${order.tokenNo}.`, 'error');
+                let tokenObjectAfterRefetch = null;
+                if (matchingTokenInstances && matchingTokenInstances.length > 0) {
+                  if (matchingTokenInstances.length === 1) {
+                    tokenObjectAfterRefetch = matchingTokenInstances[0];
+                  } else {
+                    matchingTokenInstances.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+                    tokenObjectAfterRefetch = matchingTokenInstances[0];
+                  }
                 }
-              } else {
-                // No active orders for this token, create a new one for this token
-                createFoodOrderMutation.mutate({
-                  tokenId: tokenObject.id, // Pass existing tokenId
-                  foodItems: formattedItems
-                });
+                
+                if (!tokenObjectAfterRefetch) {
+                  showToast(`Error: Token #${selectedTokenNoFromModal} not found after refetch.`, 'error');
+                  console.error(`[PlayerManagementContent] onSubmit: Token #${selectedTokenNoFromModal} not found in refetched data after attempting to find the most recent instance.`);
+                  return;
+                }
+
+                const activeOrders = tokenObjectAfterRefetch.orders?.filter(
+                  (o: any) => o.status === 'ACTIVE'
+                ).sort((a: any, b: any) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime()); 
+
+                if (activeOrders && activeOrders.length > 0) {
+                  const mostRecentActiveOrder = activeOrders[0];
+                  if (mostRecentActiveOrder) {
+                    addFoodToOrderMutation.mutate({ 
+                      orderId: mostRecentActiveOrder.id,
+                      foodItems: formattedItems
+                    });
+                  } else {
+                    // This case should ideally not be hit if activeOrders.length > 0
+                    // but as a safeguard, create a new order for the token if mostRecentActiveOrder is somehow null
+                    console.warn(`[PlayerManagementContent] onSubmit: activeOrders array had items, but mostRecentActiveOrder was unexpectedly null for token #${selectedTokenNoFromModal}. Order will be created for token ID ${tokenObjectAfterRefetch.id}`);
+                    createFoodOrderMutation.mutate({
+                      tokenId: tokenObjectAfterRefetch.id, 
+                      foodItems: formattedItems,
+                    });
+                  }
+                } else {
+                  createFoodOrderMutation.mutate({
+                    tokenId: tokenObjectAfterRefetch.id, 
+                    foodItems: formattedItems,
+                  });
+                }
+              } catch (e: any) {
+                showToast(`Error processing food order: ${e.message}`, 'error');
+                console.error("[PlayerManagementContent] onSubmit: General error during food order submission:", e);
               }
             }
           }}
-          activeTokens={busyTokenNumbers}
+          activeTokens={tokens?.map(t => t.tokenNo).sort((a,b) => a-b) ?? []}
           existingOrderId={localOrderId || undefined}
           preselectedTokenNo={localTokenNoForFoodModal}
         />
