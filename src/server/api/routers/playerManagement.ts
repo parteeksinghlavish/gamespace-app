@@ -4,7 +4,7 @@ import { TRPCError } from "@trpc/server";
 import { PaymentStatus, SessionStatus, DeviceType, OrderStatus } from "~/lib/constants";
 import { calculatePrice, roundTimeToCharge, calculateDuration, calculateSessionCost } from "~/lib/pricing";
 import { randomUUID } from "crypto";
-import type { Session } from "@prisma/client";
+import type { Session, Device, Order as PrismaOrder } from "@prisma/client";
 
 // Enum values matching Prisma's generated enums
 export { SessionStatus, DeviceType, PaymentStatus, OrderStatus };
@@ -652,10 +652,18 @@ export const playerManagementRouter = createTRPCRouter({
           token: true,
           sessions: {
             include: {
-              device: true
-            }
+              device: true,
+            },
           },
-          // No direct relation for OrderItems, will parse from notes
+          bills: { // Include existing bills for this order
+            where: {
+              status: PaymentStatus.PENDING,
+            },
+            orderBy: {
+              generatedAt: 'desc', // Get the latest PENDING bill if multiple (should ideally not happen)
+            },
+            take: 1,
+          }
         },
       });
 
@@ -666,283 +674,225 @@ export const playerManagementRouter = createTRPCRouter({
         });
       }
 
-      let totalAmount = 0;
       const now = new Date();
-      
-      // Calculate total amount based on sessions
-      console.log("Calculating bill for order:", order.orderNumber);
-      
+      let totalAmount = 0;
+
+      // --- Calculate total amount (same logic as before) ---
+      console.log("Calculating bill amount for order:", order.orderNumber);
       for (const session of order.sessions) {
         if (session.status === SessionStatus.ACTIVE) {
-          // Get the device
-          const device = await ctx.db.device.findUnique({
-            where: { id: session.deviceId }
-          });
-          
+          const device = await ctx.db.device.findUnique({ where: { id: session.deviceId } });
           if (!device) {
-            console.error(`Device with ID ${session.deviceId} not found`);
+            console.error(`Device with ID ${session.deviceId} not found for active session ${session.id}`);
             continue;
           }
-          
-          // Special handling for Frame
           if (device.type === DeviceType.FRAME) {
-            const framePrice = 50 * session.playerCount;
-            console.log(`Active Frame session ${session.id}: ${framePrice} (${session.playerCount} players)`);
-            totalAmount += framePrice;
-            continue;
-          }
-
-          // For non-Frame active sessions, calculate duration
-          const durationInMinutes = calculateDuration(session.startTime, now);
-          
-          try {
-            // Calculate price based on device type, player count, and duration
-            const price = calculatePrice(
-              device.type as any,
-              session.playerCount,
-              durationInMinutes
-            );
-            
-            console.log(`Active session ${session.id} (${session.device.type}): ${price} for ${durationInMinutes}m`);
-            totalAmount += price;
-          } catch (error) {
-            console.error("Error calculating price:", error);
-            // Fallback to legacy calculation if the new system throws an error
-            const hourlyRate = Number(device.hourlyRate || 0);
-            const roundedTime = roundTimeToCharge(durationInMinutes);
-            const cost = (hourlyRate / 60) * roundedTime;
-            console.log(`Fallback calculation for session ${session.id}: ${cost}`);
-            totalAmount += cost;
+            totalAmount += (50 * session.playerCount);
+          } else {
+            const durationInMinutes = calculateDuration(session.startTime, now);
+            try {
+              totalAmount += calculatePrice(device.type as any, session.playerCount, durationInMinutes);
+            } catch (e) {
+              console.error("Error in calculatePrice for active session:", e);
+              const hourlyRate = Number(device.hourlyRate || 0);
+              const roundedTime = roundTimeToCharge(durationInMinutes);
+              totalAmount += (hourlyRate / 60) * roundedTime;
+            }
           }
         } else {
-          // For ended sessions, use the stored cost
-          const sessionCost = Number(session.cost || 0);
-          console.log(`Ended session ${session.id} (${session.device.type}): ${sessionCost}`);
-          totalAmount += sessionCost;
+          totalAmount += Number(session.cost || 0);
         }
       }
 
-      // Calculate total amount for food items from order notes
       let foodItemsTotal = 0;
       if (order.notes) {
         const parsedFoodItems = parseFoodItemsFromNotes(order.notes);
-        console.log("Parsed food items for order:", order.orderNumber, parsedFoodItems);
         for (const item of parsedFoodItems) {
           foodItemsTotal += item.total;
         }
       }
       totalAmount += foodItemsTotal;
-      console.log(`Total food items amount for order ${order.orderNumber}: ${foodItemsTotal}`);
-      
       console.log(`Total calculated amount for order ${order.orderNumber} (including food): ${totalAmount}`);
+      // --- End of amount calculation ---
 
-      // Create the bill
-      const bill = await ctx.db.bill.create({
-        data: {
-          tokenId: order.tokenId,
-          orderId: order.id,
-          amount: totalAmount,
-          status: PaymentStatus.PENDING,
-        },
-        include: {
-          token: true,
-          order: true,
-        },
-      });
+      const existingPendingBill = order.bills && order.bills[0]; // bills is included and filtered for PENDING, take: 1
 
-      return bill;
+      if (existingPendingBill) {
+        console.log(`Found existing PENDING bill (ID: ${existingPendingBill.id}) for order ${order.orderNumber}. Updating amount.`);
+        const updatedBill = await ctx.db.bill.update({
+          where: { id: existingPendingBill.id },
+          data: {
+            amount: totalAmount,
+            generatedAt: now, // Reflect that it was re-evaluated now
+            // Other fields like status remain PENDING
+          },
+          include: {
+            token: true,
+            order: true,
+          },
+        });
+        return updatedBill;
+      } else {
+        console.log(`No existing PENDING bill for order ${order.orderNumber}. Creating new bill.`);
+        const newBill = await ctx.db.bill.create({
+          data: {
+            tokenId: order.tokenId,
+            orderId: order.id,
+            amount: totalAmount,
+            status: PaymentStatus.PENDING,
+            generatedAt: now,
+          },
+          include: {
+            token: true,
+            order: true,
+          },
+        });
+        return newBill;
+      }
     }),
 
   // Generate bill for a token (legacy support)
   generateBill: protectedProcedure
     .input(z.object({ tokenId: z.number() }))
     .mutation(async ({ ctx, input }) => {
-      const token = await ctx.db.token.findUnique({
+      // Define a more specific type for sessions with included relations
+      type SessionWithRelations = Session & {
+        device: Device; 
+        order: PrismaOrder | null; 
+      };
+
+      const tokenData = await ctx.db.token.findUnique({
         where: { id: input.tokenId },
         include: {
           sessions: {
-            include: {
-              device: true,
-              order: true,
-            },
-            orderBy: {
-              startTime: "desc",
-            },
+            include: { device: true, order: true },
+            orderBy: { startTime: "desc" },
           },
-          orders: true,
+          orders: {
+            include: {
+              bills: {
+                where: { status: PaymentStatus.PENDING },
+                orderBy: { generatedAt: 'desc' },
+                take: 1,
+              }
+            }
+          },
+          bills: {
+            where: {
+              status: PaymentStatus.PENDING,
+              orderId: null, 
+            },
+            orderBy: { generatedAt: 'desc' },
+            take: 1,
+          }
         },
       });
 
-      if (!token) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "Token not found",
-        });
+      if (!tokenData) {
+        throw new TRPCError({ code: "NOT_FOUND", message: "Token not found" });
       }
 
-      // Group sessions by order ID
-      const sessionsByOrder = new Map<string | null, Session[]>();
-      
-      // Add sessions with no order to a special group (null key)
-      sessionsByOrder.set(null, []);
-      
-      // Initialize entry for each order
-      token.orders.forEach(order => {
-        sessionsByOrder.set(order.id, []);
-      });
-      
-      // Group sessions
-      token.sessions.forEach(session => {
-        const orderId = session.orderId || null;
-        const sessions = sessionsByOrder.get(orderId) || [];
-        sessions.push(session);
-        sessionsByOrder.set(orderId, sessions);
-      });
-      
-      // Create bills for each order group
-      const bills = [];
-      
-      // First, handle sessions with orders
-      for (const [orderId, sessions] of sessionsByOrder.entries()) {
-        if (orderId === null || sessions.length === 0) continue;
-        
-        // Get the order
-        const order = token.orders.find(o => o.id === orderId);
-        if (!order) continue;
-        
-        let totalAmount = 0;
-        const now = new Date();
-        
-        // Calculate total for this order's sessions
-        for (const session of sessions) {
-          if (session.status === SessionStatus.ACTIVE) {
-            // Get the device
-            const device = await ctx.db.device.findUnique({
-              where: { id: session.deviceId }
-            });
-            
-            if (!device) {
-              console.error(`Device with ID ${session.deviceId} not found`);
-              continue;
-            }
-            
-            // Special handling for Frame
-            if (device.type === DeviceType.FRAME) {
-              const framePrice = 50 * session.playerCount;
-              totalAmount += framePrice;
-              continue;
-            }
+      const createdOrUpdatedBills = [];
+      const now = new Date();
 
-            // For non-Frame active sessions, calculate duration
-            const durationInMinutes = calculateDuration(session.startTime, now);
-            
-            try {
-              const price = calculatePrice(
-                device.type as any,
-                session.playerCount,
-                durationInMinutes
-              );
-              totalAmount += price;
-            } catch (error) {
-              console.error("Error calculating price:", error);
-              const hourlyRate = Number(device.hourlyRate || 0);
-              const roundedTime = roundTimeToCharge(durationInMinutes);
-              const cost = (hourlyRate / 60) * roundedTime;
-              totalAmount += cost;
+      const sessionsByActualOrderId = new Map<string | null, SessionWithRelations[]>();
+      (tokenData.sessions as SessionWithRelations[]).forEach(session => {
+        const orderIdKey = session.orderId || null;
+        if (!sessionsByActualOrderId.has(orderIdKey)) {
+          sessionsByActualOrderId.set(orderIdKey, []);
+        }
+        sessionsByActualOrderId.get(orderIdKey)?.push(session);
+      });
+
+      // Process sessions linked to an order
+      for (const order of tokenData.orders) {
+        const sessionsForThisOrder = sessionsByActualOrderId.get(order.id) || [];
+        if (sessionsForThisOrder.length === 0) continue;
+
+        let orderTotalAmount = 0;
+        for (const session of sessionsForThisOrder) { // session is now SessionWithRelations
+          if (session.status === SessionStatus.ACTIVE) {
+            const device = session.device; // device should be directly accessible and correctly typed
+            if (!device) { console.error("Device missing for active session on order"); continue; }
+            if (device.type === DeviceType.FRAME) {
+              orderTotalAmount += (50 * session.playerCount);
+            } else {
+              const durationInMinutes = calculateDuration(session.startTime, now);
+              try { orderTotalAmount += calculatePrice(device.type as any, session.playerCount, durationInMinutes); } 
+              catch (e) { 
+                console.error("Price calc error on order:", e); 
+                orderTotalAmount += (Number(device.hourlyRate||0)/60) * roundTimeToCharge(durationInMinutes); 
+              }
             }
           } else {
-            // For ended sessions, use the stored cost
-            const sessionCost = Number(session.cost || 0);
-            totalAmount += sessionCost;
+            orderTotalAmount += Number(session.cost || 0);
           }
         }
-        
-        // Create bill for this order
-        if (totalAmount > 0) {
-          const bill = await ctx.db.bill.create({
+        if (orderTotalAmount <= 0) continue;
+        const existingPendingBillForOrder = order.bills && order.bills[0];
+        if (existingPendingBillForOrder) {
+          const updatedBill = await ctx.db.bill.update({
+            where: { id: existingPendingBillForOrder.id },
+            data: { amount: orderTotalAmount, generatedAt: now },
+          });
+          createdOrUpdatedBills.push(updatedBill);
+        } else {
+          const newBill = await ctx.db.bill.create({
             data: {
-              tokenId: token.id,
-              orderId: orderId,
-              amount: totalAmount,
-              status: PaymentStatus.PENDING,
+              tokenId: tokenData.id, orderId: order.id, amount: orderTotalAmount,
+              status: PaymentStatus.PENDING, generatedAt: now,
             },
           });
-          bills.push(bill);
+          createdOrUpdatedBills.push(newBill);
         }
       }
-      
-      // Handle sessions without orders (legacy)
-      const legacySessions = sessionsByOrder.get(null) || [];
+
+      // Process legacy sessions (not tied to any specific order on the token)
+      const legacySessions = sessionsByActualOrderId.get(null) || [];
       if (legacySessions.length > 0) {
-        let totalAmount = 0;
-        const now = new Date();
-        
-        for (const session of legacySessions) {
+        let legacyTotalAmount = 0;
+        for (const session of legacySessions) { // session is now SessionWithRelations
           if (session.status === SessionStatus.ACTIVE) {
-            // Get the device
-            const device = await ctx.db.device.findUnique({
-              where: { id: session.deviceId }
-            });
-            
-            if (!device) {
-              console.error(`Device with ID ${session.deviceId} not found`);
-              continue;
-            }
-            
-            // Special handling for Frame
+            const device = session.device; // device should be directly accessible
+            if (!device) { console.error("Device missing for legacy active session"); continue; }
             if (device.type === DeviceType.FRAME) {
-              const framePrice = 50 * session.playerCount;
-              totalAmount += framePrice;
-              continue;
-            }
-
-            // Calculate for active sessions
-            const durationInMinutes = calculateDuration(session.startTime, now);
-            
-            try {
-              const price = calculatePrice(
-                device.type as any,
-                session.playerCount,
-                durationInMinutes
-              );
-              totalAmount += price;
-            } catch (error) {
-              console.error("Error calculating price:", error);
-              const hourlyRate = Number(device.hourlyRate || 0);
-              const roundedTime = roundTimeToCharge(durationInMinutes);
-              const cost = (hourlyRate / 60) * roundedTime;
-              totalAmount += cost;
+              legacyTotalAmount += (50 * session.playerCount);
+            } else {
+              const durationInMinutes = calculateDuration(session.startTime, now);
+              try { legacyTotalAmount += calculatePrice(device.type as any, session.playerCount, durationInMinutes); } 
+              catch (e) { 
+                console.error("Price calc error legacy:", e); 
+                legacyTotalAmount += (Number(device.hourlyRate||0)/60) * roundTimeToCharge(durationInMinutes);
+              }
             }
           } else {
-            // For ended sessions, use the stored cost
-            const sessionCost = Number(session.cost || 0);
-            totalAmount += sessionCost;
+            legacyTotalAmount += Number(session.cost || 0);
           }
         }
-        
-        // Create legacy bill without order
-        if (totalAmount > 0) {
-          const bill = await ctx.db.bill.create({
-            data: {
-              tokenId: token.id,
-              amount: totalAmount,
-              status: PaymentStatus.PENDING,
-            },
-          });
-          bills.push(bill);
+        if (legacyTotalAmount > 0) {
+          const existingLegacyPendingBill = tokenData.bills && tokenData.bills[0];
+          if (existingLegacyPendingBill) {
+            const updatedBill = await ctx.db.bill.update({
+              where: { id: existingLegacyPendingBill.id },
+              data: { amount: legacyTotalAmount, generatedAt: now },
+            });
+            createdOrUpdatedBills.push(updatedBill);
+          } else {
+            const newBill = await ctx.db.bill.create({
+              data: {
+                tokenId: tokenData.id, orderId: null, amount: legacyTotalAmount,
+                status: PaymentStatus.PENDING, generatedAt: now,
+              },
+            });
+            createdOrUpdatedBills.push(newBill);
+          }
         }
       }
-      
-      // If no bills were created, throw an error
-      if (bills.length === 0) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "No billable sessions found for this token",
-        });
+
+      if (createdOrUpdatedBills.length === 0) {
+        throw new TRPCError({ code: "BAD_REQUEST", message: "No billable activity found for this token" });
       }
-      
-      // Return the first bill (for backward compatibility)
-      return bills[0];
+      return createdOrUpdatedBills[0];
     }),
 
   // Get bill by ID
@@ -982,6 +932,30 @@ export const playerManagementRouter = createTRPCRouter({
       }
 
       return bill;
+    }),
+
+  // Get all bills with order and token information
+  getAllBills: protectedProcedure
+    .query(async ({ ctx }) => {
+      const bills = await ctx.db.bill.findMany({
+        include: {
+          token: {
+            select: {
+              tokenNo: true,
+            },
+          },
+          order: {
+            select: {
+              orderNumber: true,
+            },
+          },
+        },
+        orderBy: {
+          generatedAt: "desc",
+        },
+        distinct: ['id'],
+      });
+      return bills;
     }),
 
   // Update bill status
@@ -1609,4 +1583,44 @@ export const playerManagementRouter = createTRPCRouter({
 
       return updatedOrder;
     }),
+
+  // *** NEW PROCEDURE: Get All Gaming Sessions ***
+  getAllGamingSessions: protectedProcedure
+    .query(async ({ ctx }) => {
+      const sessions = await ctx.db.session.findMany({
+        include: {
+          device: true,
+          token: true,
+          order: true, // Include order details if the session is part of an order
+        },
+        orderBy: {
+          startTime: 'desc', // Show most recent sessions first
+        },
+      });
+      return sessions;
+    }),
+  // *** END OF NEW PROCEDURE ***
+
+  // *** NEW PROCEDURE: Get All Food Orders ***
+  getAllFoodOrders: protectedProcedure
+    .query(async ({ ctx }) => {
+      const orders = await ctx.db.order.findMany({
+        include: {
+          token: true,    // Include the token associated with the order
+          sessions: {     // Include sessions, if any, linked to this order
+            include: {
+              device: true
+            }
+          },
+          bills: true,      // Include any bills associated with the order
+        },
+        orderBy: {
+          startTime: 'desc', // Show most recent orders first
+        },
+      });
+      // We are returning the raw order notes. 
+      // The frontend can use the existing 'parseFoodItemsFromNotes' helper if it needs to display itemized food.
+      return orders;
+    }),
+  // *** END OF NEW PROCEDURE ***
 }); 

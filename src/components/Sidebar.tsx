@@ -7,8 +7,9 @@ import { usePathname } from 'next/navigation';
 const navItems = [
   { name: 'Dashboard', href: '/dashboard' },
   { name: 'Player Management', href: '/player-management' },
+  { name: 'All Entries', href: '/all-entries' },
   { name: 'Customer Management', href: '/customer-management' },
-  { name: 'Food Order', href: '/food-order' },
+
 ];
 
 export default function Sidebar() {

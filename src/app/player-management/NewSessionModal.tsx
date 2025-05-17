@@ -303,43 +303,57 @@ export default function NewSessionModal({
 
   // Check if a token number is assigned (unavailable)
   const isTokenAssigned = (tokenNumber: number) => {
-    if (!existingTokens) return false;
+    console.log(`[TokenCheck] Checking availability for Token #${tokenNumber}`);
+    if (!existingTokens) {
+      console.log(`[TokenCheck] Token #${tokenNumber}: No existingTokens data. Considered AVAILABLE.`);
+      return false;
+    }
 
-    // A token number is considered "in use" or "busy" if ANY token instance 
-    // with this number from today meets any of the following conditions:
-    // 1. Has any active gaming sessions.
-    // 2. Is associated with an active order (e.g., food order, or gaming order still open).
-    // 3. Has any PENDING bills (DUE bills mean the token is considered completed for the day and available).
-
-    for (const token of existingTokens as Token[]) { // Added type assertion for token
-      // Skip tokens with different numbers
+    for (const token of existingTokens as Token[]) {
       if (token.tokenNo !== tokenNumber) continue;
+
+      console.log(`[TokenCheck] Token #${tokenNumber}: Examining token instance ID ${token.id}`);
       
       // Condition 1: Check for active gaming sessions
-      const hasActiveSession = token.sessions?.some(
-        (session: any) => session.status === "ACTIVE" // Assuming SessionStatus.ACTIVE
+      const activeSession = token.sessions?.find(
+        (session: any) => session.status === "ACTIVE"
       );
-      if (hasActiveSession) {
-        return true; // Token busy due to active session
+      if (activeSession) {
+        console.log(`[TokenCheck] Token #${tokenNumber} (Instance ID ${token.id}): BUSY due to active gaming session ID ${activeSession.id}.`);
+        return true; 
       }
 
-      // Condition 2: Check for active orders linked to this token
-      const hasActiveOrder = token.orders?.some(
-        (order: any) => order.status === "ACTIVE" // Assuming OrderStatus.ACTIVE
-      );
-      if (hasActiveOrder) {
-        return true; // Token busy due to an active order
+      // Condition 2: Refined check for active orders
+      const activeOrderWithoutActiveSessions = token.orders?.find((order: any) => {
+        if (order.status === "ACTIVE") {
+          const sessionsForThisOrder = token.sessions?.filter((s: any) => s.orderId === order.id);
+          const thisOrderHasActiveSession = sessionsForThisOrder?.some((s: any) => s.status === "ACTIVE");
+          if (!thisOrderHasActiveSession) {
+            console.log(`[TokenCheck] Token #${tokenNumber} (Instance ID ${token.id}): Order ID ${order.id} is ACTIVE and has no active gaming sessions linked to it.`);
+            return true; // This order instance makes the token busy
+          }
+        }
+        return false;
+      });
+
+      if (activeOrderWithoutActiveSessions) {
+        console.log(`[TokenCheck] Token #${tokenNumber} (Instance ID ${token.id}): BUSY due to active order (ID ${activeOrderWithoutActiveSessions.id}) that has no active gaming sessions.`);
+        return true; 
       }
 
       // Condition 3: Check for PENDING bills linked to this token
-      const hasPendingBill = token.bills?.some(
-        (bill: any) => bill.status === "PENDING" // Assuming PaymentStatus.PENDING
+      const pendingBill = token.bills?.find(
+        (bill: any) => bill.status === "PENDING"
       );
-      if (hasPendingBill) {
-        return true; // Token busy due to a PENDING bill
+      if (pendingBill) {
+        console.log(`[TokenCheck] Token #${tokenNumber} (Instance ID ${token.id}): BUSY due to PENDING bill ID ${pendingBill.id}.`);
+        return true; 
       }
+      
+      console.log(`[TokenCheck] Token #${tokenNumber} (Instance ID ${token.id}): This specific token instance does not meet any busy conditions.`);
     }
     
+    console.log(`[TokenCheck] Token #${tokenNumber}: All instances checked. Considered AVAILABLE.`);
     return false; // Token is available
   };
 
