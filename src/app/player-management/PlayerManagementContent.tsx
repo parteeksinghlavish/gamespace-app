@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { api } from '~/trpc/react';
-import { SessionStatus, PaymentStatus } from '~/lib/constants';
+import { SessionStatus, PaymentStatus, OrderStatus } from '~/lib/constants';
 import { roundTimeToCharge, calculatePrice, calculateSessionCost } from "~/lib/pricing";
 // @ts-ignore
 import NewSessionModal from './NewSessionModal';
@@ -80,6 +80,56 @@ function extractFoodItems(notes: string): { foodItems: Array<{ displayName: stri
   }
   return { foodItems: Array.from(map.values()), otherNotes };
 }
+
+// START OF SIMPLIFIED HELPER FUNCTION
+// Using any for token type due to import issues with RouterOutputs
+function isTokenEffectivelyBusy(token: any): boolean {
+  if (!token || typeof token !== 'object') return false;
+
+  // 1. Check for active gaming sessions
+  if (token.sessions && Array.isArray(token.sessions) && token.sessions.some((session: any) => session && session.status === SessionStatus.ACTIVE)) {
+    return true;
+  }
+
+  // 2. Check for specific order conditions
+  if (token.orders && Array.isArray(token.orders)) {
+    const hasBusyOrder = token.orders.some((order: any) => {
+      if (order && order.status === OrderStatus.ACTIVE) {
+        // Pure food order (ACTIVE order with no gaming sessions)
+        if (!order.sessions || order.sessions.length === 0) {
+          return true;
+        }
+        // ACTIVE order where all its gaming sessions are ENDED
+        if (order.sessions && Array.isArray(order.sessions) && order.sessions.every((session: any) => session && session.status === SessionStatus.ENDED)) {
+          return true;
+        }
+      }
+      return false;
+    });
+    if (hasBusyOrder) {
+      return true;
+    }
+  }
+
+  // 3. Check for PENDING bills
+  // Token's own bills (directly on the token object)
+  if (token.bills && Array.isArray(token.bills) && token.bills.some((bill: any) => bill && bill.status === PaymentStatus.PENDING)) {
+    return true;
+  }
+
+  // Bills associated with orders of this token
+  if (token.orders && Array.isArray(token.orders)) {
+    const hasPendingOrderBill = token.orders.some((order: any) =>
+      order && order.bills && Array.isArray(order.bills) && order.bills.some((bill: any) => bill && bill.status === PaymentStatus.PENDING)
+    );
+    if (hasPendingOrderBill) {
+      return true;
+    }
+  }
+
+  return false;
+}
+// END OF SIMPLIFIED HELPER FUNCTION
 
 // Calculate cost for active sessions
 function calculateCost(startTime: Date | string, hourlyRate: number, deviceType: string, playerCount: number): number {
@@ -246,6 +296,10 @@ export default function PlayerManagementContent() {
   // Local state for session management
   const [localOrderId, setLocalOrderId] = useState<string | null>(null);
   const [localTokenNoForFoodModal, setLocalTokenNoForFoodModal] = useState<number | undefined>(undefined);
+  
+  const busyTokenNumbers = tokens
+    ?.filter(token => isTokenEffectivelyBusy(token))
+    .map(token => token.tokenNo) || [];
   
   // Handlers
   const handleEndSession = (sessionId: number) => {
@@ -959,7 +1013,7 @@ export default function PlayerManagementContent() {
               }
             }
           }}
-          activeTokens={tokens?.map(token => token.tokenNo) || []}
+          activeTokens={busyTokenNumbers}
           existingOrderId={localOrderId || undefined}
           preselectedTokenNo={localTokenNoForFoodModal}
         />
