@@ -1635,4 +1635,37 @@ export const playerManagementRouter = createTRPCRouter({
       return orders;
     }),
   // *** END OF NEW PROCEDURE ***
+
+  // Update food items for an existing order (full replacement)
+  updateFoodItems: protectedProcedure
+    .input(
+      z.object({
+        orderId: z.string(),
+        foodItems: z.array(
+          z.object({ name: z.string(), price: z.number(), quantity: z.number().min(0) })
+        )
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      // Check if the order exists
+      const order = await ctx.db.order.findUnique({ where: { id: input.orderId } });
+      if (!order) {
+        throw new TRPCError({ code: 'NOT_FOUND', message: 'Order not found' });
+      }
+      // Build the notes string for food items
+      let notes: string | null = null;
+      if (input.foodItems.length > 0) {
+        const foodItemsText = input.foodItems
+          .map(item => `${item.quantity}x ${item.name} (₹${item.price})`)
+          .join('|');
+        notes = `Food items: ${foodItemsText}`;
+      }
+      // Update the order notes
+      const updatedOrder = await ctx.db.order.update({
+        where: { id: input.orderId },
+        data: { notes },
+        include: { token: true }
+      });
+      return updatedOrder;
+    }),
 }); 

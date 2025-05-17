@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { api } from '~/trpc/react';
 import { SessionStatus, PaymentStatus, OrderStatus } from '~/lib/constants';
 import { roundTimeToCharge, calculatePrice, calculateSessionCost } from "~/lib/pricing";
@@ -155,6 +155,145 @@ function calculateCost(startTime: Date | string, hourlyRate: number, deviceType:
     const roundedTime = roundTimeToCharge(durationInMinutes);
     return (Number(hourlyRate) / 60) * roundedTime;
   }
+}
+
+// New component to edit food items for an order
+function FoodItemsEditor({ order, showToast, refetch }: { order: any; showToast: (message: string, type: 'success' | 'error') => void; refetch: () => Promise<any>; }) {
+  type EditableFoodItem = { displayName: string; quantity: number; price: number; total: number };
+  const initialItems: EditableFoodItem[] = extractFoodItems(order.notes || '').foodItems;
+  const [items, setItems] = useState(initialItems);
+  const [editingItemId, setEditingItemId] = useState<number | null>(null);
+  const [newQuantity, setNewQuantity] = useState<number>(1);
+
+  // Sync with order.notes updates
+  useEffect(() => {
+    setItems(extractFoodItems(order.notes || '').foodItems as EditableFoodItem[]);
+  }, [order.notes]);
+
+  const updateFoodMutation = api.playerManagement.updateFoodItems.useMutation({
+    onSuccess: () => {
+      showToast('Food order updated successfully', 'success');
+      refetch();
+    },
+    onError: (error) => {
+      showToast(`Error updating food order: ${error.message}`, 'error');
+    }
+  });
+
+  const handleEditQuantity = (idx: number) => {
+    setEditingItemId(idx);
+    setNewQuantity(items[idx]?.quantity || 1);
+  };
+
+  const handleSaveQuantity = (idx: number) => {
+    const newItems = [...items];
+    const item = newItems[idx]!;
+    newItems[idx] = { ...item, quantity: newQuantity, total: item.price * newQuantity };
+    setItems(newItems);
+    
+    updateFoodMutation.mutate({
+      orderId: order.id,
+      foodItems: newItems.map(item => ({ name: item.displayName, price: item.price, quantity: item.quantity }))
+    });
+    
+    setEditingItemId(null);
+  };
+
+  const handleCancelEdit = () => {
+    setEditingItemId(null);
+  };
+
+  const handleRemove = (idx: number) => {
+    const newItems = items.filter((_, i) => i !== idx);
+    setItems(newItems);
+    updateFoodMutation.mutate({
+      orderId: order.id,
+      foodItems: newItems.map(item => ({ name: item.displayName, price: item.price, quantity: item.quantity }))
+    });
+  };
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="border-t border-gray-200 mt-4">
+      <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+        <div className="flex items-center">
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 text-orange-500 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <h3 className="text-sm font-medium text-gray-700">Food Items</h3>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full divide-y divide-gray-200">
+          <thead>
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Item Name</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Price</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Quantity</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Total</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Actions</th>
+            </tr>
+          </thead>
+          <tbody className="bg-white divide-y divide-gray-200">
+            {items.map((item, idx) => (
+              <tr key={`food-${idx}`} className="hover:bg-gray-50 transition-colors">
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">{item.displayName}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">₹{item.price.toFixed(2)}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                  {editingItemId === idx ? (
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="number"
+                        min="1"
+                        value={newQuantity}
+                        onChange={(e) => setNewQuantity(parseInt(e.currentTarget.value) || 1)}
+                        className="w-16 p-1 border rounded focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+                      />
+                      <button
+                        onClick={() => handleSaveQuantity(idx)}
+                        className="text-green-500 hover:text-green-700"
+                      >
+                        ✓
+                      </button>
+                      <button
+                        onClick={handleCancelEdit}
+                        className="text-red-500 hover:text-red-700"
+                      >
+                        ✗
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center">
+                      <span>{item.quantity}</span>
+                      <button
+                        className="ml-2 text-xs"
+                        onClick={() => handleEditQuantity(idx)}
+                      >
+                        ✏️
+                      </button>
+                    </div>
+                  )}
+                </td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm font-medium text-gray-900">₹{item.total.toFixed(2)}</td>
+                <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
+                  <button
+                    onClick={() => handleRemove(idx)}
+                    className="text-red-500 hover:text-red-700 font-medium text-xs flex items-center"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                    </svg>
+                    Remove
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
 }
 
 export default function PlayerManagementContent() {
@@ -649,60 +788,7 @@ export default function PlayerManagementContent() {
                         )}
                         
                         {/* Display Food Items in a table format */}
-                        {(() => {
-                          if (!order.notes) return null;
-                          const { foodItems, otherNotes } = extractFoodItems(order.notes);
-                          if (foodItems.length === 0) return null;
-                          
-                          // foodItems from extractFoodItems are now correctly grouped and named.
-                          // The previous render-time grouping logic is no longer needed.
-                          const displayItems = foodItems;
-
-                          return (
-                            <div className="overflow-x-auto">
-                              <table className="min-w-full divide-y divide-gray-200">
-                                <thead>
-                                  <tr>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Device</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Item</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Price</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Quantity</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Total</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Comments</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Status</th>
-                                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider bg-gray-50">Actions</th>
-                                  </tr>
-                                </thead>
-                                <tbody className="bg-white divide-y divide-gray-200">
-                                  {displayItems.map((item, idx) => (
-                                    <tr key={`food-${idx}`} className="hover:bg-gray-50 transition-colors">
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm">
-                                        <span className="font-medium text-gray-800">Food</span>
-                                      </td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                                        {item.displayName}
-                                      </td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                                        ₹{item.price.toFixed(2)}
-                                      </td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                                        {item.quantity}pc
-                                      </td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                                        ₹{item.total.toFixed(2)}
-                                      </td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">-</td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">
-                                        <span className="px-2 inline-flex text-xs leading-5 font-semibold rounded-full bg-green-100 text-green-800">ACTIVE</span>
-                                      </td>
-                                      <td className="px-4 py-3 whitespace-nowrap text-sm text-gray-700">-</td>
-                                    </tr>
-                                  ))}
-                                </tbody>
-                              </table>
-                            </div>
-                          );
-                        })()}
+                        <FoodItemsEditor order={order} showToast={showToast} refetch={refetch} />
                       </div>
                     ))}
                   </div>
@@ -1033,7 +1119,7 @@ export default function PlayerManagementContent() {
               }
             }
           }}
-          activeTokens={tokens?.map(t => t.tokenNo).sort((a,b) => a-b) ?? []}
+          activeTokens={tokens?.filter(t => isTokenEffectivelyBusy(t)).map(t => t.tokenNo).sort((a,b) => a-b) ?? []}
           existingOrderId={localOrderId || undefined}
           preselectedTokenNo={localTokenNoForFoodModal}
         />
