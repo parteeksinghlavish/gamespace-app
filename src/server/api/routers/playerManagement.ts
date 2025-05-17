@@ -554,6 +554,24 @@ export const playerManagementRouter = createTRPCRouter({
         },
       });
 
+      // Attempt to trigger webhook for session started
+      try {
+        // Import is done dynamically to avoid circular dependencies
+        const { handleSessionStatusChange } = await import("~/server/webhooks/webhookHandler");
+        
+        // Don't await this to prevent blocking the response
+        handleSessionStatusChange(
+          session.deviceId,
+          SessionStatus.ACTIVE,
+          session.id
+        ).catch(error => {
+          console.error("Error triggering ACTIVE webhook:", error);
+        });
+      } catch (error) {
+        console.error("Error importing webhook handler:", error);
+        // We don't throw here as webhook is a secondary concern
+      }
+
       return session;
     }),
 
@@ -620,6 +638,24 @@ export const playerManagementRouter = createTRPCRouter({
           cost: cost,
         },
       });
+
+      // Attempt to trigger webhook for session ended
+      try {
+        // Import is done dynamically to avoid circular dependencies
+        const { handleSessionStatusChange } = await import("~/server/webhooks/webhookHandler");
+        
+        // Don't await this to prevent blocking the response
+        handleSessionStatusChange(
+          session.deviceId,
+          SessionStatus.ENDED,
+          session.id
+        ).catch(error => {
+          console.error("Error triggering ENDED webhook:", error);
+        });
+      } catch (error) {
+        console.error("Error importing webhook handler:", error);
+        // We don't throw here as webhook is a secondary concern
+      }
 
       return updatedSession;
     }),
